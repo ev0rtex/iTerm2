@@ -55,6 +55,7 @@
 #import "iTermOpenQuicklyWindowController.h"
 #import "iTermOrphanServerAdopter.h"
 #import "iTermPasswordManagerWindowController.h"
+#import "iTermPreciseTimer.h"
 #import "iTermPreferences.h"
 #import "iTermPromptOnCloseReason.h"
 #import "iTermProfilePreferences.h"
@@ -89,7 +90,7 @@
 #import "TmuxDashboardController.h"
 #import "ToastWindowController.h"
 #import "VT100Terminal.h"
-
+#import "iTermSubpixelModelBuilder.h"
 #import <Quartz/Quartz.h>
 #import <objc/runtime.h>
 
@@ -311,7 +312,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
     ColorsMenuItemView *labelTrackView = [[[ColorsMenuItemView alloc]
                                            initWithFrame:NSMakeRect(0, 0, 180, 50)] autorelease];
     [self addMenuItemView:labelTrackView toMenu:viewMenu title:@"Current Tab Color"];
-    
+
     if (![iTermTipController sharedInstance]) {
         [_showTipOfTheDay.menu removeItem:_showTipOfTheDay];
     }
@@ -339,6 +340,8 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
         return YES;
     } else if ([menuItem action] == @selector(makeDefaultTerminal:)) {
         return ![[iTermLaunchServices sharedInstance] iTermIsDefaultTerminal];
+    } else if ([menuItem action] == @selector(checkForIncompatibleSoftware:)) {
+        return [iTermAdvancedSettingsModel logDrawingPerformance];
     } else if (menuItem == maximizePane) {
         if ([[[iTermController sharedInstance] currentTerminal] inInstantReplay]) {
             // Things get too complex if you allow this. It crashes.
@@ -900,7 +903,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
     // If focus follows mouse is on, find the window under the cursor and make it key. If a PTYTextView
     // is under the cursor make it first responder.
     NSPoint mouseLocation = [NSEvent mouseLocation];
-    if (!NSEqualPoints(mouseLocation, _savedMouseLocation) && 
+    if (!NSEqualPoints(mouseLocation, _savedMouseLocation) &&
         [iTermPreferences boolForKey:kPreferenceKeyFocusFollowsMouse]) {
         NSRect mouseRect = {
             .origin = [NSEvent mouseLocation],
@@ -924,8 +927,9 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
             }
         }
     }
-    
+
     [self hideStuckToolTips];
+    iTermPreciseTimerClearLogs();
 }
 
 - (void)applicationWillFinishLaunching:(NSNotification *)aNotification {
@@ -1091,7 +1095,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
                                        action:@selector(showAndOrderFrontRegardlessPrefWindow:)
                                 keyEquivalent:@""] autorelease];
     [menu addItem:item];
-    
+
     item = [[[NSMenuItem alloc] initWithTitle:@"Bring All Windows to Front"
                                        action:@selector(arrangeInFront:)
                                 keyEquivalent:@""] autorelease];
@@ -1292,7 +1296,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
     if ([NSBundle it_isNightlyBuild]) {
         return;
     }
-    
+
     const BOOL inBeta = [iTermPreferences boolForKey:kPreferenceKeyCheckForTestReleases];
     if (!inBeta) {
         return;
@@ -1409,7 +1413,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
     // LaunchBar: https://twitter.com/launchbar/status/620975715278790657?cn=cmVwbHk%3D&refsrc=email
     // Pathfinder: https://twitter.com/gnachman/status/659409608642007041
     // Tower: Filed a bug. Tracking with issue 4722 on my side
-    
+
     // This is disabled because it looks like everyone is there or almost there. I can remove this
     // code soon.
 //#define SHOW_INCOMPATIBILITY_WARNING_AT_STARTUP
@@ -1496,7 +1500,7 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
                               upgradeAvailable:NO];
         found = YES;
     }
-    
+
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kHaveWarnedAboutIncompatibleSoftware];
     return found;
 }
@@ -1509,6 +1513,13 @@ static const NSTimeInterval kOneMonth = 30 * 24 * 60 * 60;
         [alert addButtonWithTitle:@"OK"];
         [alert runModal];
     }
+}
+
+- (IBAction)copyPerformanceStats:(id)sender {
+    NSString *copyString = iTermPreciseTimerGetSavedLogs();
+    NSPasteboard *pboard = [NSPasteboard generalPasteboard];
+    [pboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:self];
+    [pboard setString:copyString forType:NSStringPboardType];
 }
 
 - (IBAction)checkForUpdatesFromMenu:(id)sender {

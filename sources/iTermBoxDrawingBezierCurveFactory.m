@@ -33,7 +33,8 @@
 
 
 + (NSArray<NSBezierPath *> *)bezierPathsForBoxDrawingCode:(unichar)code
-                                                 cellSize:(NSSize)cellSize {
+                                                 cellSize:(NSSize)cellSize
+                                                    scale:(CGFloat)scale {
     //          l         hc-1    hc-1/2    hc    hc+1/2      hc+1             r
     //          a         b       c         d     e           f                g
     // t        1
@@ -59,7 +60,7 @@
         case iTermBoxDrawingCodeHeavyVertical:  // ┃
             components = @"c1c7 e1e7";
             break;
-            
+
         case iTermBoxDrawingCodeLightTripleDashHorizontal:  // ┄
         case iTermBoxDrawingCodeHeavyTripleDashHorizontal:  // ┅
         case iTermBoxDrawingCodeLightTripleDashVertical:  // ┆
@@ -69,7 +70,7 @@
         case iTermBoxDrawingCodeLightQuadrupleDashVertical:  // ┊
         case iTermBoxDrawingCodeHeavyQuadrupleDashVertical:  // ┋
             return nil;
-            
+
         case iTermBoxDrawingCodeLightDownAndRight:  // ┌
             components = @"g4d4 d4d7";
             break;
@@ -268,7 +269,7 @@
         case iTermBoxDrawingCodeLightDoubleDashVertical:  // ╎
         case iTermBoxDrawingCodeHeavyDoubleDashVertical:  // ╏
             return nil;
-            
+
         case iTermBoxDrawingCodeDoubleHorizontal:  // ═
             components = @"a2g2 a6g6";
             break;
@@ -414,22 +415,40 @@
             components = @"c1c4 e1e4 d4d7";
             break;
     }
-    
+
     if (!components) {
         return nil;
     }
-    
+
     CGFloat horizontalCenter = cellSize.width / 2.0;
     CGFloat verticalCenter = cellSize.height / 2.0;
-    
+
     const char *bytes = [components UTF8String];
     NSBezierPath *path = [NSBezierPath bezierPath];
+    [path setLineWidth:scale];
     int lastX = -1;
     int lastY = -1;
     int i = 0;
     int length = components.length;
-    CGFloat xs[] = { 0, horizontalCenter - 1, horizontalCenter - 0.5, horizontalCenter, horizontalCenter + 0.5, horizontalCenter + 1, cellSize.width };
-    CGFloat ys[] = { 0, verticalCenter - 1, verticalCenter - 0.5, verticalCenter, verticalCenter + 0.5, verticalCenter + 1, cellSize.height };
+    CGFloat xs[] = {
+        0,
+        horizontalCenter - scale,
+        horizontalCenter - scale/2,
+        horizontalCenter,
+        horizontalCenter + scale/2,
+        horizontalCenter + scale,
+        cellSize.width
+    };
+    CGFloat ys[] = {
+        0,
+        verticalCenter - scale,
+        verticalCenter - scale/2,
+        verticalCenter,
+        verticalCenter + scale/2,
+        verticalCenter + scale,
+        cellSize.height
+
+    };
     while (i + 4 <= length) {
         int x1 = bytes[i++] - 'a';
         int y1 = bytes[i++] - '1';
@@ -450,13 +469,13 @@
         } else {
             [path lineToPoint:NSMakePoint(xs[x2], ys[y2])];
         }
-        
+
         i++;
-        
+
         lastX = x2;
         lastY = y2;
     }
-    
+
     return @[ path ];
 }
 

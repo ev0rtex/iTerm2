@@ -19,10 +19,13 @@
 #import "iTermController.h"
 #import "iTermCopyModeState.h"
 #import "iTermGrowlDelegate.h"
+#import "iTermHistogram.h"
 #import "iTermHotKeyController.h"
 #import "iTermInitialDirectory.h"
 #import "iTermKeyBindingMgr.h"
 #import "iTermKeyLabels.h"
+#import "iTermMetalGlue.h"
+#import "iTermMetalDriver.h"
 #import "iTermMenuOpener.h"
 #import "iTermMouseCursor.h"
 #import "iTermPasteHelper.h"
@@ -221,6 +224,7 @@ static const NSUInteger kMaxHosts = 100;
     iTermAutomaticProfileSwitcherDelegate,
     iTermCoprocessDelegate,
     iTermHotKeyNavigableSession,
+    iTermMetalGlueDelegate,
     iTermPasteHelperDelegate,
     iTermSessionViewDelegate,
     iTermUpdateCadenceControllerDelegate>
@@ -466,6 +470,10 @@ static const NSUInteger kMaxHosts = 100;
     long long _statusChangedAbsLine;
 
     iTermUpdateCadenceController *_cadenceController;
+
+    iTermMetalGlue *_metalGlue NS_AVAILABLE_MAC(10_11);
+
+    int _updateCount;
 }
 
 + (void)registerSessionInArrangement:(NSDictionary *)arrangement {
@@ -549,6 +557,11 @@ static const NSUInteger kMaxHosts = 100;
         _customEscapeSequenceNotifications = [[NSMutableDictionary alloc] init];
 
         _statusChangedAbsLine = -1;
+        if (@available(macOS 10.11, *)) {
+            _metalGlue = [[iTermMetalGlue alloc] init];
+            _metalGlue.delegate = self;
+            _metalGlue.screen = _screen;
+        }
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(coprocessChanged)
@@ -598,6 +611,10 @@ static const NSUInteger kMaxHosts = 100;
                                                  selector:@selector(windowDidEndLiveResize:)
                                                      name:NSWindowDidEndLiveResizeNotification
                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(annotationVisibilityDidChange:)
+                                                     name:iTermAnnotationVisibilityDidChange
+                                                   object:nil];
         [self updateVariables];
 
         if (!synthetic) {
@@ -611,6 +628,9 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (void)iterm_dealloc {
     [_view release];
+    if (@available(macOS 10.11, *)) {
+        [_metalGlue release];
+    }
     [self stopTailFind];  // This frees the substring in the tail find context, if needed.
     _shell.delegate = nil;
     dispatch_release(_executionSemaphore);
@@ -681,7 +701,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [_customEscapeSequenceNotifications release];
 
     [_copyModeState release];
-    
+
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     if (_dvrDecoder) {
@@ -694,8 +714,8 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (NSString *)description
 {
-    return [NSString stringWithFormat:@"<%@: %p %dx%d>",
-               [self class], self, [_screen width], [_screen height]];
+    return [NSString stringWithFormat:@"<%@: %p %dx%d metal=%@>",
+               [self class], self, [_screen width], [_screen height], @(self.useMetal)];
 }
 
 - (void)setLiveSession:(PTYSession *)liveSession {
@@ -1306,6 +1326,9 @@ ITERM_WEAKLY_REFERENCEABLE
     NSDictionary *liveArrangement = arrangement[SESSION_ARRANGEMENT_LIVE_SESSION];
     if (liveArrangement) {
         SessionView *liveView = [[[SessionView alloc] initWithFrame:sessionView.frame] autorelease];
+        if (@available(macOS 10.11, *)) {
+            liveView.driver.dataSource = aSession->_metalGlue;
+        }
         [delegate addHiddenLiveView:liveView];
         aSession.liveSession = [self sessionFromArrangement:liveArrangement
                                                      inView:liveView
@@ -1357,6 +1380,9 @@ ITERM_WEAKLY_REFERENCEABLE
     // Allocate the root per-session view.
     if (!_view) {
         self.view = [[[SessionView alloc] initWithFrame:NSMakeRect(0, 0, aRect.size.width, aRect.size.height)] autorelease];
+        if (@available(macOS 10.11, *)) {
+            self.view.driver.dataSource = _metalGlue;
+        }
         [[_view findViewController] setDelegate:self];
     }
 
@@ -1368,6 +1394,9 @@ ITERM_WEAKLY_REFERENCEABLE
 
     _textview = [[PTYTextView alloc] initWithFrame: NSMakeRect(0, [iTermAdvancedSettingsModel terminalVMargin], aSize.width, aSize.height)
                                           colorMap:_colorMap];
+    if (@available(macOS 10.11, *)) {
+        _metalGlue.textView = _textview;
+    }
     _colorMap.dimOnlyText = [iTermPreferences boolForKey:kPreferenceKeyDimOnlyText];
     [_textview setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
     [_textview setFont:[ITAddressBookMgr fontWithDesc:[_profile objectForKey:KEY_NORMAL_FONT]]
@@ -1418,6 +1447,11 @@ ITERM_WEAKLY_REFERENCEABLE
     _newOutput = NO;
     [_view updateScrollViewFrame];
     [self useTransparencyDidChange];
+
+    if (@available(macOS 10.11, *)) {
+        [self updateMetalDriver];
+    }
+
     return YES;
 }
 
@@ -1513,6 +1547,9 @@ ITERM_WEAKLY_REFERENCEABLE
     if (!_tailFindTimer &&
         [_delegate sessionBelongsToVisibleTab]) {
         [self beginTailFind];
+    }
+    if (@available(macOS 10.11, *)) {
+        [self updateMetalDriver];
     }
 }
 
@@ -1920,6 +1957,9 @@ ITERM_WEAKLY_REFERENCEABLE
     [_textview setDelegate:nil];
     [_textview removeFromSuperview];
     _textview = nil;
+    if (@available(macOS 10.11, *)) {
+        _metalGlue.textView = nil;
+    }
 }
 
 - (void)jumpToLocationWhereCurrentStatusChanged {
@@ -2367,7 +2407,7 @@ ITERM_WEAKLY_REFERENCEABLE
         dispatch_semaphore_signal(_executionSemaphore);
         dispatch_release(_executionSemaphore);
         [self release];
-        });
+    });
 }
 
 - (void)synchronousReadTask:(NSString *)string {
@@ -3354,7 +3394,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [self setBlend:[iTermProfilePreferences floatForKey:KEY_BLEND inProfile:aDict]];
     [self setTransparencyAffectsOnlyDefaultBackgroundColor:[iTermProfilePreferences floatForKey:KEY_TRANSPARENCY_AFFECTS_ONLY_DEFAULT_BACKGROUND_COLOR inProfile:aDict]];
 
-    // bold 
+    // bold
     [self setUseBoldFont:[iTermProfilePreferences boolForKey:KEY_USE_BOLD_FONT
                                                    inProfile:aDict]];
     self.thinStrokes = [iTermProfilePreferences intForKey:KEY_THIN_STROKES inProfile:aDict];
@@ -3398,7 +3438,7 @@ ITERM_WEAKLY_REFERENCEABLE
                                                       inProfile:aDict]
                    nonAscii:[iTermProfilePreferences boolForKey:KEY_NONASCII_ANTI_ALIASED
                                                       inProfile:aDict]];
-    
+
     [self setEncoding:[iTermProfilePreferences unsignedIntegerForKey:KEY_CHARACTER_ENCODING inProfile:aDict]];
     [self setTermVariable:[iTermProfilePreferences stringForKey:KEY_TERMINAL_TYPE inProfile:aDict]];
     [_terminal setAnswerBackString:[iTermProfilePreferences stringForKey:KEY_ANSWERBACK_STRING inProfile:aDict]];
@@ -3437,7 +3477,7 @@ ITERM_WEAKLY_REFERENCEABLE
         verticalSpacing:[iTermProfilePreferences floatForKey:KEY_VERTICAL_SPACING inProfile:aDict]];
     [_screen setSaveToScrollbackInAlternateScreen:[iTermProfilePreferences boolForKey:KEY_SCROLLBACK_IN_ALTERNATE_SCREEN
                                                                             inProfile:aDict]];
-    
+
     NSDictionary *shortcutDictionary = [iTermProfilePreferences objectForKey:KEY_SESSION_HOTKEY inProfile:aDict];
     iTermShortcut *shortcut = [iTermShortcut shortcutWithDictionary:shortcutDictionary];
     [[iTermSessionHotkeyController sharedInstance] setShortcut:shortcut
@@ -3453,6 +3493,7 @@ ITERM_WEAKLY_REFERENCEABLE
         [self.tmuxController setTabColorString:tabColor ? [tabColor hexString] : iTermTmuxTabColorNone
                                  forWindowPane:_tmuxPane];
     }
+    [self.delegate sessionUpdateMetalAllowed];
 }
 
 - (NSString *)badgeLabel {
@@ -3703,6 +3744,9 @@ ITERM_WEAKLY_REFERENCEABLE
     [_view autorelease];
     _view = [newView retain];
     newView.delegate = self;
+    if (@available(macOS 10.11, *)) {
+        newView.driver.dataSource = _metalGlue;
+    }
     [newView updateTitleFrame];
     [[_view findViewController] setDelegate:self];
 }
@@ -3759,22 +3803,15 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (BOOL)viewShouldWantLayer {
-    if (![iTermAdvancedSettingsModel useLayers]) {
-        return NO;
-    }
-    if (!_delegate.realParentWindow || !_textview) {
-        return YES;
-    }
-    BOOL isTransparent = ([[_delegate realParentWindow] useTransparency] && [_textview transparency] > 0);
-    return !isTransparent;
+    return NO;
 }
 
 - (void)useTransparencyDidChange {
     // The view does not like getting replaced during the spin of the runloop during which it is created.
-    if (_view.window && _delegate.realParentWindow && _textview && self.viewShouldWantLayer != _view.useSubviewWithLayer) {
+    if (_view.window && _delegate.realParentWindow && _textview) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (_view.window && _delegate.realParentWindow && _textview && self.viewShouldWantLayer != _view.useSubviewWithLayer) {
-                _view.useSubviewWithLayer = self.viewShouldWantLayer;
+            if (_view.window && _delegate.realParentWindow && _textview) {
+                [_delegate sessionUpdateMetalAllowed];
             }
         });
     }
@@ -4013,7 +4050,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }
     result[SESSION_ARRANGEMENT_ENVIRONMENT] = self.environment ?: @{};
     result[SESSION_ARRANGEMENT_IS_UTF_8] = @(self.isUTF8);
-    
+
     NSDictionary *shortcutDictionary = [[[iTermSessionHotkeyController sharedInstance] shortcutForSession:self] dictionaryValue];
     if (shortcutDictionary) {
         result[SESSION_ARRANGEMENT_HOTKEY] = shortcutDictionary;
@@ -4136,8 +4173,15 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (void)updateDisplay {
+    _updateCount++;
+    if (@available(macOS 10.11, *)) {
+        if (_useMetal && _updateCount % 10 == 0) {
+            iTermPreciseTimerSaveLog([NSString stringWithFormat:@"%@: updateDisplay interval", _view.driver.identifier],
+                                     _cadenceController.histogram.stringValue);
+        }
+    }
     _timerRunning = YES;
-    
+
     // Set attributes of tab to indicate idle, processing, etc.
     if (![self isTmuxGateway]) {
         [_delegate updateLabelAttributes];
@@ -4371,6 +4415,15 @@ ITERM_WEAKLY_REFERENCEABLE
             _inLiveResize = NO;
             [_cadenceController liveResizeDidEnd];
         }
+    }
+}
+
+// Metal is disabled when any note anywhere is visible because compositing NSViews over Metal
+// is a horror and besides these are subviews of PTYTextView and I really don't
+// want to invest any more in this little-used feature.
+- (void)annotationVisibilityDidChange:(NSNotification *)notification {
+    if ([iTermAdvancedSettingsModel useMetal]) {
+        [_delegate sessionUpdateMetalAllowed];
     }
 }
 
@@ -4644,6 +4697,12 @@ ITERM_WEAKLY_REFERENCEABLE
     [_textview clearHighlights:YES];
 }
 
+- (void)findViewControllerVisibilityDidChange:(id)sender {
+    if (@available(macOS 10.11, *)) {
+        [_delegate sessionUpdateMetalAllowed];
+    }
+}
+
 - (NSImage *)snapshot {
     DLog(@"Session %@ calling refresh", self);
     [_textview refresh];
@@ -4678,6 +4737,94 @@ ITERM_WEAKLY_REFERENCEABLE
                                                     }
                                                 }];
     [self queueAnnouncement:announcement identifier:@"AbortUploadOnKeyPressAnnouncement"];
+}
+
+#pragma mark - Metal Support
+
+- (void)metalGlueDidDrawFrameAndNeedsRedraw:(BOOL)redrawAsap NS_AVAILABLE_MAC(10_11) {
+    if (_view.useMetal) {
+        // If the text view had been visible, hide it. Hiding it before the
+        // first frame is drawn causes a flash of gray.
+        DLog(@"metalGlueDidDrawFrame");
+        _wrapper.useMetal = YES;
+        _textview.suppressDrawing = YES;
+        _view.metalView.alphaValue = 1;
+        if (redrawAsap) {
+            [_textview setNeedsDisplay:YES];
+        }
+    }
+}
+
+- (BOOL)metalAllowed {
+    static dispatch_once_t onceToken;
+    static BOOL machineSupportsMetal;
+    if (@available(macOS 10.11, *)) {
+        dispatch_once(&onceToken, ^{
+            NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+            machineSupportsMetal = devices.count > 0;
+            [devices release];
+        });
+    }
+    // Metal's not allowed when other views are composited over the metal view because that just
+    // doesn't seem to work, even if you use presentsWithTransaction (even if it did work, it
+    // requires presenting the drawable on the main thread which defeats the purpose of the metal
+    // renderer).
+    //
+    // Perhaps some day transparency and ligatures will be supported.
+    return ([iTermAdvancedSettingsModel useMetal] &&
+            machineSupportsMetal &&
+            _textview.transparencyAlpha == 1 &&
+            ![self ligaturesEnabledInEitherFont] &&
+            ![PTYNoteViewController anyNoteVisible] &&
+            !_view.findViewController.isVisible &&
+            !_pasteHelper.pasteViewIsVisible &&
+            _view.currentAnnouncement == nil);
+}
+
+- (BOOL)ligaturesEnabledInEitherFont {
+    iTermTextDrawingHelper *helper = _textview.drawingHelper;
+    [helper updateCachedMetrics];
+    if (helper.asciiLigatures && helper.asciiLigaturesAvailable) {
+        return YES;
+    }
+    if ([iTermProfilePreferences boolForKey:KEY_USE_NONASCII_FONT inProfile:self.profile] &&
+        [iTermProfilePreferences boolForKey:KEY_NON_ASCII_LIGATURES inProfile:self.profile]) {
+        return YES;
+    }
+    return NO;
+}
+
+- (void)setUseMetal:(BOOL)useMetal {
+    if (@available(macOS 10.11, *)) {
+        if (useMetal == _useMetal) {
+            return;
+        }
+        _useMetal = useMetal;
+        // The metalview's alpha will initially be 0. Once it has drawn a frame we'll swap what is visible.
+        [self setUseMetal:useMetal dataSource:_metalGlue];
+        if (useMetal) {
+            [self updateMetalDriver];
+            // wrapper.useMetal becomes YES after the first frame is done drawing
+        } else {
+            _wrapper.useMetal = NO;
+        }
+        [_textview setNeedsDisplay:YES];
+        [_cadenceController changeCadenceIfNeeded];
+    }
+}
+
+- (void)setUseMetal:(BOOL)useMetal dataSource:(id<iTermMetalDriverDataSource>)dataSource NS_AVAILABLE_MAC(10_11) {
+    [_view setUseMetal:useMetal dataSource:dataSource];
+    if (!useMetal) {
+        _textview.suppressDrawing = NO;
+    }
+}
+
+- (void)updateMetalDriver NS_AVAILABLE_MAC(10_11) {
+    [_view.driver setCellSize:CGSizeMake(_textview.charWidth, _textview.lineHeight)
+       cellSizeWithoutSpacing:CGSizeMake(_textview.charWidthWithoutSpacing, _textview.charHeightWithoutSpacing)
+                     gridSize:_screen.currentGrid.size
+                        scale:_view.window.screen.backingScaleFactor];
 }
 
 #pragma mark - Captured Output
@@ -4890,7 +5037,7 @@ ITERM_WEAKLY_REFERENCEABLE
     // %begin time 1 0
     // no sessions
     // %error time
-    
+
     // tmux -CC attach with an existing session prints this unsolicited:
     // %begin time 1 0
     // %end time 1 0
@@ -5210,7 +5357,7 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (void)tmuxCannotSendCharactersInSupplementaryPlanes:(NSString *)string windowPane:(int)windowPane {
     PTYSession *session = [_tmuxController sessionForWindowPane:windowPane];
-    
+
     NSString *message = [NSString stringWithFormat:@"Because of a bug in tmux 2.2, the character “%@” cannot be sent.", string];
     iTermAnnouncementViewController *announcement =
         [iTermAnnouncementViewController announcementWithTitle:message
@@ -5703,7 +5850,7 @@ ITERM_WEAKLY_REFERENCEABLE
             }
             break;
         }
-            
+
         case KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING: {
             DLog(@"Toggle pinning");
             BOOL autoHid = [iTermProfilePreferences boolForKey:KEY_HOTKEY_AUTOHIDE inProfile:self.profile];
@@ -6012,7 +6159,7 @@ ITERM_WEAKLY_REFERENCEABLE
                 DLog(@"PTYSession keyDown enter key");
                 keystr = @"\015";  // Enter key -> 0x0d
             }
-            
+
             // In issue 4039 we see that in some cases the numeric keypad mask isn't set properly.
             if (keycode == kVK_ANSI_KeypadDecimal ||
                 keycode == kVK_ANSI_KeypadMultiply ||
@@ -6060,7 +6207,7 @@ ITERM_WEAKLY_REFERENCEABLE
                 DLog(@"modflag = 0x%x; send_strlen = %zd; send_str[0] = '%c (0x%x)'",
                      modflag, send_strlen, send_str[0], send_str[0]);
             }
-            
+
             if ((modflag & NSControlKeyMask) &&
                 send_strlen == 1 &&
                 send_str[0] == '|') {
@@ -6091,9 +6238,9 @@ ITERM_WEAKLY_REFERENCEABLE
                 send_str = (unsigned char*)"\033[Z";
                 send_strlen = 3;
             }
-            
+
         }
-        
+
         if (_exited == NO) {
             if (send_pchr >= 0) {
                 // Send a prefix character (e.g., esc).
@@ -6102,7 +6249,7 @@ ITERM_WEAKLY_REFERENCEABLE
                 dataLength = 1;
                 [self writeLatin1EncodedData:[NSData dataWithBytes:dataPtr length:dataLength] broadcastAllowed:YES];
             }
-            
+
             if (send_str != NULL) {
                 dataPtr = send_str;
                 dataLength = send_strlen;
@@ -6238,6 +6385,9 @@ ITERM_WEAKLY_REFERENCEABLE
         [self notifyTmuxFontChange];
     }
     [_view updateScrollViewFrame];
+    if (@available(macOS 10.11, *)) {
+        [self updateMetalDriver];
+    }
 }
 
 - (BOOL)textViewHasBackgroundImage {
@@ -6312,6 +6462,10 @@ ITERM_WEAKLY_REFERENCEABLE
         [[[self processedBackgroundColor] colorWithAlphaComponent:alpha] set];
         NSRectFillUsingOperation(rect, NSCompositeCopy);
     }
+}
+
+- (NSImage *)textViewBackgroundImage {
+    return _backgroundImage;
 }
 
 - (NSColor *)processedBackgroundColor {
@@ -6759,14 +6913,14 @@ ITERM_WEAKLY_REFERENCEABLE
                                                         switch (selection) {
                                                             case -2:  // Dismiss programmatically
                                                                 break;
-                                                                
+
                                                             case -1: // No
                                                                 break;
-                                                                
+
                                                             case 0: // Yes
                                                                 [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"AlternateMouseScroll"];
                                                                 break;
-                                                                
+
                                                             case 1: { // Never
                                                                 [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kNeverAskAboutAltMouseScroll];
                                                                 break;
@@ -6807,6 +6961,7 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (void)textViewBackgroundColorDidChange {
     [_delegate sessionBackgroundColorDidChange:self];
+    [_delegate sessionUpdateMetalAllowed];
 }
 
 - (void)textViewBurySession {
@@ -6844,6 +6999,27 @@ ITERM_WEAKLY_REFERENCEABLE
         _copyModeState.coord = range.start;
         _copyModeState.start = range.end;
         [self.textview setNeedsDisplay:YES];
+    }
+}
+
+- (void)textViewNeedsDisplayInRect:(NSRect)rect {
+    if (@available(macOS 10.11, *)) {
+        NSRect visibleRect = NSIntersectionRect(rect, _textview.enclosingScrollView.documentVisibleRect);
+        [_view setMetalViewNeedsDisplayInTextViewRect:visibleRect];
+    }
+}
+
+- (BOOL)textViewShouldDrawRect {
+    if (@available(macOS 10.11, *)) {
+        return !_textview.suppressDrawing;
+    } else {
+        return YES;
+    }
+}
+
+- (void)textViewDidHighightMark {
+    if (self.useMetal) {
+        [_textview setNeedsDisplay:YES];
     }
 }
 
@@ -7187,7 +7363,7 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (BOOL)screenShouldBeginPrinting {
-    
+
     return ![[[self profile] objectForKey:KEY_DISABLE_PRINTING] boolValue];
 }
 
@@ -8291,7 +8467,7 @@ ITERM_WEAKLY_REFERENCEABLE
     if (now < _ignoreBellUntil) {
         return YES;
     }
-    
+
     // Only sample every X seconds.
     static const NSTimeInterval kMaximumTimeBetweenSamples = 0.01;
     if (now < _lastBell + kMaximumTimeBetweenSamples) {
@@ -8813,7 +8989,7 @@ ITERM_WEAKLY_REFERENCEABLE
     if (!_shellIntegrationEverUsed) {
         return NO;
     }
-    
+
     return self.currentCommand == nil;
 }
 
@@ -8823,6 +8999,12 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (BOOL)pasteHelperCanWaitForPrompt {
     return _shellIntegrationEverUsed;
+}
+
+- (void)pasteHelperPasteViewVisibilityDidChange {
+    if (@available(macOS 10.11, *)) {
+        [self.delegate sessionUpdateMetalAllowed];
+    }
 }
 
 #pragma mark - iTermAutomaticProfileSwitcherDelegate
@@ -8868,7 +9050,7 @@ ITERM_WEAKLY_REFERENCEABLE
 - (void)sessionViewMouseExited:(NSEvent *)event {
     [_textview mouseExited:event];
 }
-    
+
 - (void)sessionViewMouseMoved:(NSEvent *)event {
     [_textview mouseMoved:event];
 }
@@ -8895,7 +9077,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [self textViewDrawBackgroundImageInView:view
                                    viewRect:rect
                      blendDefaultBackground:blendDefaultBackground];
-    
+
 }
 
 - (NSDragOperation)sessionViewDraggingEntered:(id<NSDraggingInfo>)sender {
@@ -8903,7 +9085,7 @@ ITERM_WEAKLY_REFERENCEABLE
     if (![_delegate session:self shouldAllowDrag:sender]) {
         return NSDragOperationNone;
     }
-    
+
     if (!([[[sender draggingPasteboard] types] indexOfObject:@"com.iterm2.psm.controlitem"] != NSNotFound)) {
         if ([[MovePaneController sharedInstance] isMovingSession:self]) {
             // Moving me onto myself
@@ -8913,7 +9095,7 @@ ITERM_WEAKLY_REFERENCEABLE
             return NSDragOperationNone;
         }
     }
-    
+
     [self.view createSplitSelectionView];
     return NSDragOperationMove;
 }
@@ -9020,6 +9202,27 @@ ITERM_WEAKLY_REFERENCEABLE
     [self.textview.window makeFirstResponder:self.textview];
 }
 
+- (void)sessionViewDidChangeWindow {
+    if (@available(macOS 10.11, *)) {
+        [self updateMetalDriver];
+    }
+}
+
+- (void)sessionViewAnnouncementDidChange:(SessionView *)sessionView {
+    [self.delegate sessionUpdateMetalAllowed];
+}
+
+- (void)sessionViewHideMetalViewUntilNextFrame {
+    if (@available(macOS 10.11, *)) {
+        if (!_useMetal) {
+            return;
+        }
+        _wrapper.useMetal = NO;
+        _textview.suppressDrawing = NO;
+        _view.metalView.alphaValue = 0;
+    }
+}
+
 #pragma mark - iTermCoprocessDelegate
 
 - (void)coprocess:(Coprocess *)coprocess didTerminateWithErrorOutput:(NSString *)errors {
@@ -9053,7 +9256,7 @@ ITERM_WEAKLY_REFERENCEABLE
     state.active = _active;
     state.idle = self.isIdle;
     state.visible = [_delegate sessionBelongsToVisibleTab];
-    state.useAdaptiveFrameRate = _useAdaptiveFrameRate;
+    state.useAdaptiveFrameRate = _useAdaptiveFrameRate && !self.useMetal;
     state.adaptiveFrameRateThroughputThreshold = _adaptiveFrameRateThroughputThreshold;
     state.slowFrameRate = _slowFrameRate;
     state.liveResizing = _inLiveResize;

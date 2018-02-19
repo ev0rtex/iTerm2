@@ -358,7 +358,7 @@ static NSRect iTermRectCenteredVerticallyWithinRect(NSRect frameToCenter, NSRect
 
     // Number of tabs since last change.
     NSInteger _previousNumberOfTabs;
-    
+
     // The window restoration completion block was called but windowDidDecodeRestorableState:
     // has not yet been called.
     BOOL _expectingDecodeOfRestorableState;
@@ -789,7 +789,7 @@ static NSRect iTermRectCenteredVerticallyWithinRect(NSRect frameToCenter, NSRect
             // This allows the window to enter Lion fullscreen.
             [[self window] setCollectionBehavior:[[self window] collectionBehavior] | NSWindowCollectionBehaviorFullScreenPrimary];
             break;
-            
+
         case iTermHotkeyWindowTypeRegular:
         case iTermHotkeyWindowTypeFloatingPanel:
         case iTermHotkeyWindowTypeFloatingWindow:
@@ -868,7 +868,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [_touchBarRateLimitedUpdate invalidate];
     [_touchBarRateLimitedUpdate release];
     [_previousTouchBarWord release];
-    
+
     [super dealloc];
 }
 
@@ -925,6 +925,10 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (BOOL)shouldShowToolbelt {
     return _contentView.shouldShowToolbelt;
+}
+
+- (BOOL)windowIsResizing {
+    return liveResize_ || togglingLionFullScreen_ || exitingLionFullscreen_ || zooming_;
 }
 
 - (void)hideToolbelt {
@@ -1652,10 +1656,15 @@ ITERM_WEAKLY_REFERENCEABLE
 - (void)setWindowTitle {
     if (self.isShowingTransientTitle) {
         PTYSession *session = self.currentSession;
-        NSString *aTitle = [NSString stringWithFormat:@"%@ \u2014 %d✕%d",
-                            [self currentSessionName],
-                            [session columns],
-                            [session rows]];
+        NSString *aTitle;
+        if (self.window.frame.size.width < 250) {
+            aTitle = [NSString stringWithFormat:@"%d✕%d", session.columns, session.rows];
+        } else {
+            aTitle = [NSString stringWithFormat:@"%@ \u2014 %d✕%d",
+                      [self currentSessionName],
+                      [session columns],
+                      [session rows]];
+        }
         [self setWindowTitle:aTitle];
     } else {
         [self setWindowTitle:[self currentSessionName]];
@@ -2053,7 +2062,7 @@ ITERM_WEAKLY_REFERENCEABLE
         // Do not have a hotkey defined for this profile
         return NO;
     }
-    
+
     return YES;
 }
 
@@ -2217,7 +2226,7 @@ ITERM_WEAKLY_REFERENCEABLE
         if ([aTab isTmuxTab]) {
             NSSize tabSize = [aTab tmuxSize];
             DLog(@"tab %@ size is %@", aTab, NSStringFromSize(tabSize));
-            
+
             tmuxSize.width = (int) MIN(tmuxSize.width, tabSize.width);
             tmuxSize.height = (int) MIN(tmuxSize.height, tabSize.height);
         }
@@ -2651,7 +2660,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }
 
     [[self retain] autorelease];
-    
+
     // This releases the last reference to self except for autorelease pools.
     [[iTermController sharedInstance] terminalWillClose:self];
 
@@ -2729,6 +2738,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }
     [self notifyTmuxOfTabChange];
 
+    [self updateUseMetalInAllTabs];
     [_contentView updateDivisionView];
 }
 
@@ -2746,9 +2756,12 @@ ITERM_WEAKLY_REFERENCEABLE
     }
 }
 
-// Forbid FFM from changing key window if is hotkey window.
+// Forbid FFM from changing key window when the key window is an auto-hiding hotkey window.
 - (BOOL)disableFocusFollowsMouse {
-    return self.isHotKeyWindow;
+    if (!self.isHotKeyWindow) {
+        return NO;
+    }
+    return [[[iTermHotKeyController sharedInstance] profileHotKeyForWindowController:self] autoHides];
 }
 
 - (CGFloat)growToolbeltBy:(CGFloat)diff {
@@ -3057,6 +3070,7 @@ ITERM_WEAKLY_REFERENCEABLE
         [aSession setFocused:NO];
     }
 
+    [self updateUseMetalInAllTabs];
     [_contentView updateDivisionView];
 }
 
@@ -3077,7 +3091,7 @@ ITERM_WEAKLY_REFERENCEABLE
     if (![siblings containsObject:newMainWindowController]) {
         [[iTermHotKeyController sharedInstance] autoHideHotKeyWindows:siblings];
     }
-    
+
     // update the cursor
     [[[self currentSession] textview] refresh];
     [[[self currentSession] textview] setNeedsDisplay:YES];
@@ -3323,6 +3337,12 @@ ITERM_WEAKLY_REFERENCEABLE
     } else {
         DLog(@"** Re-entrant call to windowDidChangeScreen:! Not canonicalizing. **");
     }
+    if (@available(macOS 10.11, *)) {
+        for (PTYSession *session in self.allSessions) {
+            [session updateMetalDriver];
+            [session.textview setNeedsDisplay:YES];
+        }
+    }
     DLog(@"Returning from windowDidChangeScreen:.");
 }
 
@@ -3387,6 +3407,7 @@ ITERM_WEAKLY_REFERENCEABLE
     return timeSinceLastResize < kTimeToPreserveTemporaryTitle;
 }
 
+// This takes care of updating the metal state
 - (void)updateUseTransparency {
     iTermApplicationDelegate *itad = [iTermApplication.sharedApplication delegate];
     [itad updateUseTransparencyMenuItem];
@@ -3698,6 +3719,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [self saveTmuxWindowOrigins];
 
     [self updateTouchBarIfNeeded:NO];
+    [self updateUseMetalInAllTabs];
 }
 
 - (BOOL)fullScreen
@@ -3728,6 +3750,7 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (void)windowWillStartLiveResize:(NSNotification *)notification {
     liveResize_ = YES;
+    [self updateUseMetalInAllTabs];
 }
 
 - (void)windowDidEndLiveResize:(NSNotification *)notification {
@@ -3802,11 +3825,13 @@ ITERM_WEAKLY_REFERENCEABLE
         [self tmuxTabLayoutDidChange:YES];
         postponedTmuxTabLayoutChange_ = NO;
     }
+    [self updateUseMetalInAllTabs];
 }
 
 - (void)windowWillEnterFullScreen:(NSNotification *)notification {
     DLog(@"Window will enter lion fullscreen");
     togglingLionFullScreen_ = YES;
+    [self updateUseMetalInAllTabs];
     [self repositionWidgets];
 }
 
@@ -3835,6 +3860,7 @@ ITERM_WEAKLY_REFERENCEABLE
         _didEnterLionFullscreen = nil;
     }
     [self updateTouchBarIfNeeded:NO];
+    [self updateUseMetalInAllTabs];
 }
 
 - (void)windowWillExitFullScreen:(NSNotification *)notification
@@ -3845,6 +3871,7 @@ ITERM_WEAKLY_REFERENCEABLE
     [self fitTabsToWindow];
     [self repositionWidgets];
     self.window.hasShadow = YES;
+    [self updateUseMetalInAllTabs];
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification
@@ -3871,11 +3898,13 @@ ITERM_WEAKLY_REFERENCEABLE
     [self saveTmuxWindowOrigins];
     [self.window makeFirstResponder:self.currentSession.textview];
     [self updateTouchBarIfNeeded:NO];
+    [self updateUseMetalInAllTabs];
 }
 
 - (NSRect)windowWillUseStandardFrame:(NSWindow *)sender defaultFrame:(NSRect)defaultFrame {
     // Disable redrawing during zoom-initiated live resize.
     zooming_ = YES;
+    [self updateUseMetalInAllTabs];
     if (togglingLionFullScreen_) {
         // Tell it to use the whole screen when entering Lion fullscreen.
         // This is actually called twice in a row when entering fullscreen.
@@ -4077,6 +4106,12 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 // NSTabView
+- (void)tabView:(NSTabView *)tabView closeTab:(id)identifier {
+    if ([iTermAdvancedSettingsModel middleClickClosesTab]) {
+        [self closeTab:identifier];
+    }
+}
+
 - (void)tabView:(NSTabView *)tabView willSelectTabViewItem:(NSTabViewItem *)tabViewItem
 {
     if (![[self currentSession] exited]) {
@@ -4184,6 +4219,15 @@ ITERM_WEAKLY_REFERENCEABLE
         _contentView.color = [NSColor windowBackgroundColor];
     }
     [self updateCurrentLocation];
+    [self updateUseMetalInAllTabs];
+}
+
+- (void)updateUseMetalInAllTabs {
+    if (@available(macOS 10.11, *)) {
+        for (PTYTab *aTab in self.tabs) {
+            [aTab updateUseMetal];
+        }
+    }
 }
 
 - (void)updateCurrentLocation {
@@ -4497,7 +4541,7 @@ ITERM_WEAKLY_REFERENCEABLE
         if (wasDraggedFromAnotherWindow_) {
             wasDraggedFromAnotherWindow_ = NO;
             [firstTab setReportIdealSizeAsCurrent:NO];
-            
+
             // fitWindowToTabs will detect the window changed sizes and do a bogus move of it in this case.
             if (windowType_ == WINDOW_TYPE_NORMAL ||
                 windowType_ == WINDOW_TYPE_NO_TITLE_BAR) {
@@ -4777,7 +4821,7 @@ ITERM_WEAKLY_REFERENCEABLE
 
     [theTab numberOfSessionsDidChange];
     [self saveTmuxWindowOrigins];
-    
+
     if (tabToRemove) {
         [self.tabView removeTabViewItem:tabToRemove.tabViewItem];
     }
@@ -5109,6 +5153,12 @@ ITERM_WEAKLY_REFERENCEABLE
     [[self tabForSession:oldSession] setDvrInSession:newSession];
     if (![self inInstantReplay]) {
         [self showHideInstantReplay];
+    }
+}
+
+- (IBAction)captureNextMetalFrame:(id)sender {
+    if (@available(macOS 10.11, *)) {
+        self.currentSession.view.driver.captureDebugInfoForNextFrame = YES;
     }
 }
 
@@ -6383,7 +6433,7 @@ ITERM_WEAKLY_REFERENCEABLE
 
     [self updateTabBarStyle];
     [self updateCurrentLocation];
-    
+
     // If hiding of menu bar changed.
     if ([self fullScreen] && ![self lionFullScreen]) {
         if ([[self window] isKeyWindow]) {
@@ -7226,7 +7276,10 @@ ITERM_WEAKLY_REFERENCEABLE
         result = [[self currentSession] hasSelection];
     } else if ([item action] == @selector(zoomOut:)) {
         return self.currentSession.textViewIsZoomedIn;
+    } else if (item.action == @selector(captureNextMetalFrame:)) {
+        return self.currentSession.useMetal;
     }
+
     return result;
 }
 
@@ -7905,7 +7958,7 @@ ITERM_WEAKLY_REFERENCEABLE
     if (_screenNumberFromFirstProfile == -2) {
         // Return screen with cursor
         NSPoint cursor = [NSEvent mouseLocation];
-        [[NSScreen screens] enumerateObjectsUsingBlock:^(NSScreen * _Nonnull screen, NSUInteger i, BOOL * _Nonnull stop) {            
+        [[NSScreen screens] enumerateObjectsUsingBlock:^(NSScreen * _Nonnull screen, NSUInteger i, BOOL * _Nonnull stop) {
             if (NSPointInRect(cursor, screen.frame)) {
                 _isAnchoredToScreen = YES;
                 _anchoredScreenNumber = i;
@@ -8008,6 +8061,10 @@ ITERM_WEAKLY_REFERENCEABLE
     if (self.numberOfTabs == 1) {
         [self setWindowTitle];
     }
+}
+
+- (void)tab:(PTYTab *)tab didSetMetalEnabled:(BOOL)useMetal {
+    _contentView.useMetal = useMetal;
 }
 
 - (void)currentSessionWordAtCursorDidBecome:(NSString *)word {
