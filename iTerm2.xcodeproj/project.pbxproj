@@ -1207,7 +1207,7 @@
 		874206490564169600CFC3F1 /* iTermApplicationDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 20D5CC6304E7AA0500000106 /* iTermApplicationDelegate.h */; };
 		874206530564169600CFC3F1 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0464AB2F006CD2EC7F000001 /* AppKit.framework */; };
 		90A1E13B186F9EA4003EC3E8 /* AppleScriptTest.m in Sources */ = {isa = PBXBuildFile; fileRef = 90A1E13A186F9EA4003EC3E8 /* AppleScriptTest.m */; };
-		937BBC4D201637F000BD504C /* iTerm2.app in CopyFiles */ = {isa = PBXBuildFile; fileRef = 8742065A0564169600CFC3F1 /* iTerm2.app */; };
+		933F5E78203AA9BF0039CD17 /* iTerm2.app in CopyFiles */ = {isa = PBXBuildFile; fileRef = 8742065A0564169600CFC3F1 /* iTerm2.app */; };
 		93A6FEFA10685E9900A5F905 /* dsa_pub.pem in Resources */ = {isa = PBXBuildFile; fileRef = 93A6FEF910685E9900A5F905 /* dsa_pub.pem */; };
 		9D737D5F17495B4100B3334D /* PrefsGeneral.png in Resources */ = {isa = PBXBuildFile; fileRef = 9D737D5D17495B4100B3334D /* PrefsGeneral.png */; };
 		9D737D6017495B4100B3334D /* PrefsGeneral@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 9D737D5E17495B4100B3334D /* PrefsGeneral@2x.png */; };
@@ -2675,13 +2675,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		937BBC4C201637DD00BD504C /* CopyFiles */ = {
+		933F5E77203AA9A50039CD17 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = /Applications;
 			dstSubfolderSpec = 0;
 			files = (
-				937BBC4D201637F000BD504C /* iTerm2.app in CopyFiles */,
+				933F5E78203AA9BF0039CD17 /* iTerm2.app in CopyFiles */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -7569,7 +7569,7 @@
 				874206550564169600CFC3F1 /* Rez */,
 				874206560564169600CFC3F1 /* CopyFiles */,
 				93BD20450FE16DD50059656D /* Update SVN Revision */,
-				937BBC4C201637DD00BD504C /* CopyFiles */,
+				933F5E77203AA9A50039CD17 /* CopyFiles */,
 			);
 			buildRules = (
 			);
@@ -9591,7 +9591,7 @@
 					"$(inherited)",
 					"\"$(SRCROOT)/ThirdParty/Growl.framework\"",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 10.12;
 				OTHER_CFLAGS = "-DBETA=1";
 				OTHER_CODE_SIGN_FLAGS = "--deep";
 				OTHER_LDFLAGS = (
@@ -10230,7 +10230,7 @@
 					"$(inherited)",
 					"\"$(SRCROOT)/ThirdParty/Growl.framework\"",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 10.12;
 				"OTHER_CFLAGS[arch=*]" = "-DBETA=1";
 				OTHER_CODE_SIGN_FLAGS = "--deep";
 				OTHER_LDFLAGS = (
@@ -11261,7 +11261,7 @@
 					"\"$(SRCROOT)/ThirdParty/Growl.framework\"",
 				);
 				LINK_WITH_STANDARD_LIBRARIES = YES;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 10.12;
 				"OTHER_CFLAGS[arch=*]" = (
 					"-DITERM_DEBUG=1",
 					"-DBETA=1",
@@ -11334,7 +11334,7 @@
 					"$(inherited)",
 					"\"$(SRCROOT)/ThirdParty/Growl.framework\"",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 10.12;
 				"OTHER_CFLAGS[arch=*]" = "";
 				OTHER_CODE_SIGN_FLAGS = "--deep";
 				OTHER_LDFLAGS = (
