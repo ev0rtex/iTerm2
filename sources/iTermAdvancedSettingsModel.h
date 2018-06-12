@@ -84,6 +84,7 @@
 + (BOOL)optionIsMetaForSpecialChars;
 
 + (BOOL)startDebugLoggingAutomatically;
++ (BOOL)appendToExistingDebugLog;
 + (BOOL)aboutToPasteTabsWithCancel;
 
 + (BOOL)alwaysAcceptFirstMouse;
@@ -200,9 +201,34 @@
 + (BOOL)useExperimentalFontMetrics;
 + (BOOL)supportREPCode;
 + (BOOL)showBlockBoundaries;
-+ (BOOL)useMetal;
 + (BOOL)showMetalFPSmeter;
 + (BOOL)tabsWrapAround;
 + (BOOL)middleClickClosesTab;
++ (BOOL)disableMetalWhenUnplugged;
++ (BOOL)disableMetalWhenIdle;
++ (BOOL)disableGrowl;
++ (BOOL)proportionalScrollWheelReporting;
++ (BOOL)useModernScrollWheelAccumulator;
++ (BOOL)openUntitledFile;
++ (BOOL)aggressiveFocusFollowsMouse;
++ (BOOL)enableUnderlineSemanticHistoryOnCmdHover;
++ (BOOL)conservativeURLGuessing;
++ (double)activeUpdateCadence;
++ (BOOL)openNewWindowAtStartup;
++ (BOOL)resetSGROnPrompt;
+
+#if ENABLE_LOW_POWER_GPU_DETECTION
++ (BOOL)useLowPowerGPUWhenUnplugged;
+#endif
+
++ (BOOL)retinaInlineImages;
++ (double)timeToWaitForEmojiPanel;
++ (BOOL)preferIntegratedGPU;
++ (double)fractionOfCharacterSelectingNextNeighbor;
++ (double)timeoutForStringEvaluation;
++ (BOOL)evaluateSwiftyStrings;
++ (BOOL)disableAdaptiveFrameRateInInteractiveApps;
++ (int)minimumWeightDifferenceForBoldFont;
++ (BOOL)metalDeferCurrentDrawable;
 
 @end

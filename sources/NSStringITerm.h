@@ -34,6 +34,8 @@
 
 #import <Cocoa/Cocoa.h>
 
+#import "iTermTuple.h"
+
 // This is the standard unicode replacement character for when input couldn't
 // be parsed properly but we need to render something there.
 #define UNICODE_REPLACEMENT_CHAR 0xfffd
@@ -52,6 +54,8 @@ int decode_utf8_char(const unsigned char * restrict datap,
                      int * restrict result);
 
 @interface NSString (iTerm)
+
+@property (nonatomic, readonly) NSString *jsonEncodedString;
 
 + (NSString *)stringWithInt:(int)num;
 + (BOOL)isDoubleWidthCharacter:(int)unicode
@@ -172,13 +176,10 @@ int decode_utf8_char(const unsigned char * restrict datap,
 // How tall is this string when rendered within a fixed width?
 - (CGFloat)heightWithAttributes:(NSDictionary *)attributes constrainedToWidth:(CGFloat)maxWidth;
 
-- (NSArray *)keyValuePair;
+- (iTermTuple *)keyValuePair;
 
 - (NSString *)stringByReplacingVariableReferencesWithVariables:(NSDictionary *)vars;
 - (NSString *)stringByPerformingSubstitutions:(NSDictionary *)substituions;
-
-// Does self contain |substring|?
-- (BOOL)containsString:(NSString *)substring;
 
 // Returns self repeated |n| times.
 - (NSString *)stringRepeatedTimes:(int)n;
@@ -266,6 +267,15 @@ int decode_utf8_char(const unsigned char * restrict datap,
 - (void)it_drawInRect:(CGRect)rect attributes:(NSDictionary *)attributes;
 
 - (BOOL)startsWithEmoji;
++ (NSString *)it_formatBytes:(double)bytes;
+
+// For a string like
+// lll\(eee(eee,eee,"eee","\\"","ee\(EE())"))ll
+// Invoke block for each literal and expression. In the above example there would be three calls:
+// lll                                      YES
+// eee(eee,eee,"eee","\\"","ee\(EE())")     NO
+// ll                                       YES
+- (void)enumerateSwiftySubstrings:(void (^)(NSString *substring, BOOL isLiteral))block;
 
 @end
 

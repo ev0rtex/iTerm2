@@ -8,15 +8,18 @@
 #import "PTYSplitView.h"
 #import "PTYTabDelegate.h"
 #import "WindowControllerInterface.h"
+#import "Api.pbobjc.h"
 
+@class FakeWindow;
+@class iTermVariables;
 @class PTYSession;
 @class PTYTab;
-@class FakeWindow;
 @class SessionView;
-@class TmuxController;
 @class SolidColorView;
+@class TmuxController;
 
 extern NSString *const iTermTabDidChangeWindowNotification;
+extern NSString *const iTermSessionBecameKey;
 
 // This implements NSSplitViewDelegate but it was an informal protocol in 10.5. If 10.5 support
 // is eventually dropped, change this to make it official.
@@ -55,12 +58,17 @@ extern NSString *const iTermTabDidChangeWindowNotification;
 @property(nonatomic, copy) NSString *tmuxWindowName;
 @property (readonly, getter=isTmuxTab) BOOL tmuxTab;
 @property (nonatomic, readonly) PTYTabState state;
+@property (nonatomic, readonly) iTermVariables *variables;
 
 // If non-nil, this session may not change size. This is useful when you want
 // to change a session's size. You can resize it, lock it, and then
 // adjustSubviews of the splitview (ordinarily done by a call to -[PTYTab
 // setSize:]).
 @property(nonatomic, assign) __unsafe_unretained PTYSession *lockedSession;
+
+// A string that overrides the default behavior of using the active session's title.
+// Set to nil to use the default behavior.
+@property (nonatomic, copy) NSString *titleOverride;
 
 // Save the contents of all sessions. Used during window restoration so that if
 // the sessions are later restored from a saved arrangement during startup
@@ -211,5 +219,8 @@ extern NSString *const iTermTabDidChangeWindowNotification;
 - (void)setTmuxWindowName:(NSString *)tmuxWindowName;
 
 - (void)updateUseMetal NS_AVAILABLE_MAC(10_11);
+- (ITMSplitTreeNode *)rootSplitTreeNode;
+
+- (void)setSizesFromSplitTreeNode:(ITMSplitTreeNode *)node;
 
 @end

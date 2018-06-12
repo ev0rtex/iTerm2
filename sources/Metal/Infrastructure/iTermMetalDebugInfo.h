@@ -36,6 +36,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 @end
 
+@protocol iTermMetalCellRenderer;
 @class iTermMetalRendererTransientState;
 
 NS_CLASS_AVAILABLE(10_11, NA)
@@ -45,8 +46,10 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 - (void)setRenderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor;
 - (void)setIntermediateRenderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor;
+- (void)setTemporaryRenderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor;
 - (void)addRowData:(iTermMetalRowData *)rowData;
 - (void)addTransientState:(iTermMetalRendererTransientState *)tState;
+- (void)addCellRenderer:(id<iTermMetalCellRenderer>)renderer;
 - (iTermMetalDebugDrawInfo *)newDrawWithFormatter:(id<iTermMetalDebugInfoFormatter>)formatter;
 - (void)addRenderOutputData:(NSData *)data
                        size:(CGSize)size

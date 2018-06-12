@@ -44,12 +44,6 @@
     return [super initWithWindowNibName:NSStringFromClass([self class])];
 }
 
-- (void)dealloc {
-    [_model release];
-    [_pendingExplanation release];
-    [super dealloc];
-}
-
 - (void)awakeFromNib {
     if (_pendingExplanation) {
         _explanation.stringValue = _pendingExplanation;
@@ -61,8 +55,7 @@
 
 - (void)setModel:(iTermHotkeyPreferencesModel *)model {
     [self window];
-    [_model autorelease];
-    _model = [model retain];
+    _model = model;
     [self modelDidChange];
     [self updateViewsEnabled];
 }
@@ -163,18 +156,22 @@
 - (IBAction)editAdditionalHotKeys:(id)sender {
     _mutableShortcuts = [self.model.alternateShortcuts mutableCopy];
     [_tableView reloadData];
+    __weak __typeof(self) weakSelf = self;
     [self.window beginSheet:_editAdditionalWindow completionHandler:^(NSModalResponse returnCode) {
-        self.model.alternateShortcuts = [_mutableShortcuts filteredArrayUsingBlock:^BOOL(iTermShortcut *shortcut) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        self.model.alternateShortcuts = [strongSelf->_mutableShortcuts filteredArrayUsingBlock:^BOOL(iTermShortcut *shortcut) {
             return shortcut.charactersIgnoringModifiers.length > 0;
         }];
-        [_mutableShortcuts release];
-        _mutableShortcuts = nil;
+        strongSelf->_mutableShortcuts = nil;
     }];
     [self updateAdditionalHotKeysViews];
 }
 
 - (IBAction)addAdditionalShortcut:(id)sender {
-    [_mutableShortcuts addObject:[[[iTermShortcut alloc] init] autorelease]];
+    [_mutableShortcuts addObject:[[iTermShortcut alloc] init]];
     [_tableView reloadData];
     [self updateAdditionalHotKeysViews];
 }

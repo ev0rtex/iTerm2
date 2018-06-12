@@ -47,14 +47,11 @@
 }
 
 - (void)dealloc {
-    [_boundHostsTableView release];
     _boundHostsTableView.delegate = nil;
     _boundHostsTableView.dataSource = nil;
-    [super dealloc];
 }
 
 - (void)awakeFromNib {
-    [_boundHostsTableView retain];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(reloadProfiles:)
                                                  name:kReloadAllProfiles
@@ -113,8 +110,12 @@
 
 - (IBAction)editTriggers:(id)sender {
     [_triggerWindowController windowWillOpen];
+    __weak __typeof(self) weakSelf = self;
     [self.view.window beginSheet:_triggerWindowController.window completionHandler:^(NSModalResponse returnCode) {
-        [_triggerWindowController.window close];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf->_triggerWindowController.window close];
+        }
     }];
 }
 
@@ -150,8 +151,12 @@
 - (IBAction)editSmartSelection:(id)sender {
     [_smartSelectionWindowController window];
     [_smartSelectionWindowController windowWillOpen];
+    __weak __typeof(self) weakSelf = self;
     [self.view.window beginSheet:_smartSelectionWindowController.window completionHandler:^(NSModalResponse returnCode) {
-        [_smartSelectionWindowController.window close];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf->_smartSelectionWindowController.window close];
+        }
     }];
 }
 
@@ -171,7 +176,7 @@
     [_boundHostsTableView reloadData];
     [self removeNamelessHosts];
 
-    NSMutableArray *temp = [[[self boundHosts] mutableCopy] autorelease];
+    NSMutableArray *temp = [[self boundHosts] mutableCopy];
     [temp addObject:@""];
     [self setObject:temp forKey:KEY_BOUND_HOSTS];
     [_boundHostsTableView reloadData];
@@ -203,7 +208,7 @@
     // API that explicitly ends editing.
     [_boundHostsTableView reloadData];
 
-    NSMutableArray *temp = [[[self boundHosts] mutableCopy] autorelease];
+    NSMutableArray *temp = [[self boundHosts] mutableCopy];
     [temp removeObjectAtIndex:rowIndex];
     [self setObject:temp forKey:KEY_BOUND_HOSTS];
     [_boundHostsTableView reloadData];
@@ -245,7 +250,7 @@
     if (!hosts) {
         hosts = @[];
     }
-    NSMutableArray *temp = [[hosts mutableCopy] autorelease];
+    NSMutableArray *temp = [hosts mutableCopy];
     temp[rowIndex] = anObject;
     [self setObject:temp forKey:KEY_BOUND_HOSTS];
 
@@ -272,7 +277,7 @@
                                         identifier:nil
                                        silenceable:kiTermWarningTypePersistent]) {
             case kiTermWarningSelection0:
-                temp = [[boundHosts mutableCopy] autorelease];
+                temp = [boundHosts mutableCopy];
                 [temp removeObject:anObject];
                 [iTermProfilePreferences setObject:temp
                                             forKey:KEY_BOUND_HOSTS
@@ -301,7 +306,7 @@
 - (NSCell *)tableView:(NSTableView *)tableView
     dataCellForTableColumn:(NSTableColumn *)tableColumn
                        row:(NSInteger)row {
-    NSTextFieldCell *cell = [[[NSTextFieldCell alloc] initTextCell:@"hostname"] autorelease];
+    NSTextFieldCell *cell = [[NSTextFieldCell alloc] initTextCell:@"hostname"];
     [cell setPlaceholderString:@"Hostname, username@hostname, or username@"];
     [cell setEditable:YES];
     return cell;

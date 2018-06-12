@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <vector>
 
 static const NSInteger iTermHistogramStringWidth = 20;
@@ -108,26 +109,67 @@ namespace iTerm2 {
         }
 
         // percentile in [0, 1)
-        double value_for_percentile(const double &percentile) {
+        double value_for_percentile(const double &percentile) const {
             if (_values.size() == 0) {
                 return std::nan("");
             }
             assert(percentile >= 0);
-            assert(percentile < 1);
+            assert(percentile <= 1);
             std::vector<double> sorted_values(_values);
             std::sort(std::begin(sorted_values),
                       std::end(sorted_values));
-            const size_t index = std::floor(_values.size() * percentile);
-            return sorted_values[index];
+            const int index = static_cast<int>(std::floor(_values.size() * percentile));
+            const int limit = static_cast<int>(_values.size()) - 1;
+            const int safe_index = clamp(index, 0, limit);
+            return sorted_values[safe_index];
+        }
+
+        std::vector<int> get_histogram() const {
+            std::vector<int> result;
+            const double n = _values.size();
+            if (n == 0) {
+                return result;
+            }
+
+            // https://en.wikipedia.org/wiki/Freedman%E2%80%93Diaconis_rule
+            double binWidth = 2.0 * iqr() / pow(n, 1.0 / 3.0);
+            if (binWidth <= 0) {
+                result.push_back(_values.size());
+                return result;
+            }
+
+            const double minimum = value_for_percentile(0);
+            const double maximum = value_for_percentile(1);
+            const double range = maximum - minimum;
+            const double max_bins = 15;
+            if (range / binWidth > max_bins) {
+                binWidth = range / max_bins;
+            }
+            for (int i = 0; i < _values.size(); i++) {
+                const int bucket = (_values[i] - minimum) / binWidth;
+                if (result.size() <= bucket) {
+                    result.resize(bucket + 1);
+                }
+                result[bucket]++;
+            }
+            return result;
         }
 
     private:
+        int clamp(int i, int min, int max) const {
+            return std::min(std::max(min, i), max);
+        }
+
+        double iqr() const {
+            const double p25 = value_for_percentile(0.25);
+            const double p75 = value_for_percentile(0.75);
+            return p75 - p25;
+        }
     };
 }
+
 @implementation iTermHistogram {
-    std::map<int, int> _buckets;
     double _sum;
-    int _maxCount;
     double _min;
     double _max;
     iTerm2::Sampler *_sampler;
@@ -145,14 +187,16 @@ namespace iTerm2 {
     delete _sampler;
 }
 
-- (void)addValue:(double)value {
-    double logValue = std::log(value + 1) / std::log(M_SQRT2);
+- (void)clear {
+    _sum = 0;
+    _min = 0;
+    _max = 0;
+    _count = 0;
+    delete _sampler;
+    _sampler = new iTerm2::Sampler(100);
+}
 
-    int bucket = std::min(255.0, std::floor(logValue));
-    int newCount = _buckets[bucket];
-    newCount++;
-    _buckets[bucket] = newCount;
-    _maxCount = std::max(_maxCount, newCount);
+- (void)addValue:(double)value {
     if (_count == 0) {
         _min = _max = value;
     } else {
@@ -168,10 +212,6 @@ namespace iTerm2 {
     if (other == nil) {
         return;
     }
-    for (auto pair : other->_buckets) {
-        _buckets[pair.first] += pair.second;
-        _maxCount = std::max(_maxCount, _buckets[pair.first]);
-    }
     _sum += other->_sum;
     _min = MIN(_min, other->_min);
     _max = MAX(_max, other->_max);
@@ -179,23 +219,44 @@ namespace iTerm2 {
     _sampler->merge_from(*other->_sampler);
 }
 
+// 3.2.0beta1 had a TON of crashes in dtoa. Somehow I'm producing doubles that are so broken
+// they can't be converted to ASCII.
+static double iTermSaneDouble(const double d) {
+    if (d != d) {
+      return -666;
+    }
+    NSInteger i = d * 1000;
+    return static_cast<double>(i) / 1000.0;
+}
+
 - (NSString *)stringValue {
-    if (_count == 0) {
+    std::vector<int> buckets = _sampler->get_histogram();
+    if (buckets.size() == 0) {
         return @"No events";
     }
     NSMutableString *string = [NSMutableString string];
-    if (_buckets.size() > 0) {
-        const int min = _buckets.begin()->first;
-        const int max = _buckets.rbegin()->first;
-        for (int bucket = min; bucket <= max; bucket++) {
-            [string appendString:[self stringForBucket:bucket]];
-            [string appendString:@"\n"];
-        }
+    const int largestCount = *std::max_element(buckets.begin(), buckets.end());
+    const int total = std::accumulate(buckets.begin(), buckets.end(), 0);
+    const double minimum = _sampler->value_for_percentile(0);
+    const double range = _sampler->value_for_percentile(1) - minimum;
+    const double binWidth = range / buckets.size();
+    for (int i = 0; i < buckets.size(); i++) {
+        [string appendString:[self stringForBucket:i
+                                             count:buckets[i]
+                                      largestCount:largestCount
+                                             total:total
+                                  bucketLowerBound:minimum + i * binWidth
+                                  bucketUpperBound:minimum + (i + 1) * binWidth]];
+        [string appendString:@"\n"];
     }
+    const double mean = (double)_sum / (double)_count;
+    const double p50 = iTermSaneDouble(_sampler->value_for_percentile(0.5));
+    const double p95 = iTermSaneDouble(_sampler->value_for_percentile(0.95));
+
     [string appendFormat:@"Count=%@ Sum=%@ Mean=%0.3f p_50=%0.3f p_95=%0.3f",
-     @(_count), @(_sum), (double)_sum / (double)_count,
-     _sampler->value_for_percentile(0.5),
-     _sampler->value_for_percentile(0.95)];
+     @(_count), @(_sum), mean,
+     p50,
+     p95];
     return string;
 }
 
@@ -205,13 +266,7 @@ namespace iTerm2 {
     }
     NSMutableString *sparklines = [NSMutableString string];
 
-    if (_buckets.size() > 0) {
-        const int min = _buckets.begin()->first;
-        const int max = _buckets.rbegin()->first;
-        for (int bucket = min; bucket <= max; bucket++) {
-            [sparklines appendString:[self sparkForBucket:bucket]];
-        }
-    }
+    [sparklines appendString:[self sparklineGraphWithPrecision:4 multiplier:1 units:@""]];
 
     return [NSString stringWithFormat:@"%@ %@ %@  Count=%@ Mean=%@ p50=%@ p95=%@ Sum=%@",
             @(_min),
@@ -224,25 +279,62 @@ namespace iTerm2 {
             @(_sum)];
 }
 
+- (double)valueAtNTile:(double)ntile {
+    return _sampler->value_for_percentile(ntile);
+}
+
+- (NSString *)floatingPointFormatWithPrecision:(int)precision units:(NSString *)units {
+    return [NSString stringWithFormat:@"%%0.%df%@", precision, units];
+}
+
+- (NSString *)sparklineGraphWithPrecision:(int)precision multiplier:(double)multiplier units:(NSString *)units {
+    std::vector<int> buckets = _sampler->get_histogram();
+    if (buckets.size() == 0) {
+        return @"";
+    }
+
+    NSString *format = [self floatingPointFormatWithPrecision:precision units:units];
+    const double lowerBound = multiplier * _sampler->value_for_percentile(0);
+    const double upperBound = multiplier * _sampler->value_for_percentile(1);
+    NSMutableString *sparklines = [NSMutableString stringWithFormat:format, lowerBound];
+    [sparklines appendString:@" "];
+    const double largestBucketCount = *std::max_element(buckets.begin(), buckets.end());
+    for (int i = 0; i < buckets.size(); i++) {
+        [sparklines appendString:[self sparkWithHeight:buckets[i] / largestBucketCount]];
+    }
+    [sparklines appendString:@" "];
+    [sparklines appendFormat:format, upperBound];
+
+    return sparklines;
+}
+
 #pragma mark - Private
 
-- (NSString *)stringForBucket:(int)bucket {
+- (NSString *)stringForBucket:(int)bucket
+                       count:(int)count
+                largestCount:(int)maxCount
+                       total:(int)total
+            bucketLowerBound:(double)bucketLowerBound
+            bucketUpperBound:(double)bucketUpperBound {
     NSMutableString *stars = [NSMutableString string];
-    const int n = _buckets[bucket] * iTermHistogramStringWidth / _maxCount;
+    const int n = count * iTermHistogramStringWidth / maxCount;
     for (int i = 0; i < n; i++) {
         [stars appendString:@"*"];
     }
-    NSString *percent = [NSString stringWithFormat:@"%0.1f%%", 100.0 * static_cast<double>(_buckets[bucket]) / static_cast<double>(_count)];
+    NSString *percent = [NSString stringWithFormat:@"%0.1f%%", 100.0 * static_cast<double>(count) / static_cast<double>(total)];
     return [NSString stringWithFormat:@"[%12.0f, %12.0f) %8d (%6s) |%@",
-            pow(M_SQRT2, bucket) - 1,
-            pow(M_SQRT2, bucket + 1) - 1,
-            _buckets[bucket],
+            bucketLowerBound,
+            bucketUpperBound,
+            count,
             percent.UTF8String,
             stars];
 }
 
-- (NSString *)sparkForBucket:(int)bucket {
-    double fraction = (double)_buckets[bucket] / (double)_maxCount;
+- (NSString *)sparkWithHeight:(double)fraction {
+    if (fraction == 0) {
+        return @" ";
+    }
+
     NSArray *characters = @[ @"▁", @"▂", @"▃", @"▄", @"▅", @"▆", @"▇", @"█" ];
     int index = std::round(fraction * (characters.count - 1));
     return characters[index];

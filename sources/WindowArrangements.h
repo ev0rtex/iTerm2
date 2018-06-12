@@ -9,14 +9,7 @@
 #import <Cocoa/Cocoa.h>
 #import "ArrangementPreviewView.h"
 
-@interface WindowArrangements : NSViewController <NSTableViewDataSource, NSTableViewDelegate> {
-    IBOutlet NSTableColumn *defaultColumn_;
-    IBOutlet NSTableColumn *titleColumn_;
-    IBOutlet NSTableView *tableView_;
-    IBOutlet ArrangementPreviewView *previewView_;
-    IBOutlet NSButton *deleteButton_;
-    IBOutlet NSButton *defaultButton_;
-}
+@interface WindowArrangements : NSViewController <NSTableViewDataSource, NSTableViewDelegate>
 
 + (WindowArrangements *)sharedInstance;
 

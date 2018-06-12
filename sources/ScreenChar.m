@@ -214,7 +214,8 @@ screen_char_t ImageCharForNewImage(NSString *name,
         newKey = ccmNextKey++;
     } while (ComplexCharKeyIsReserved(newKey));
 
-    screen_char_t c = { 0 };
+    screen_char_t c;
+    memset(&c, 0, sizeof(c));
     c.image = 1;
     c.code = newKey;
 
@@ -445,7 +446,9 @@ NSString* ScreenCharArrayToString(screen_char_t* screenChars,
     int o = 0;
     for (int i = start; i < end; ++i) {
         unichar c = screenChars[i].code;
-        if (c == DWC_RIGHT) {
+        if (c >= ITERM2_PRIVATE_BEGIN && c <= ITERM2_PRIVATE_END) {
+            // Skip private-use characters which signify things like double-width characters and
+            // tab fillers.
             ++delta;
         } else {
             const int len = ExpandScreenChar(&screenChars[i], charHaystack + o);
@@ -506,6 +509,16 @@ int EffectiveLineLength(screen_char_t* theLine, int totalLength) {
         }
     }
     return 0;
+}
+
+NSString *DebugStringForScreenChar(screen_char_t c) {
+    NSArray *modes = @[ @"default", @"selected", @"altsem", @"altsem-reversed" ];
+    return [NSString stringWithFormat:@"<screen_char_t: code=%@ complex=%@ image=%@ url=%@ foregroundColor=%@ fgGreen=%@ fgBlue=%@ backgroundColor=%@ bgGreen=%@ bgBlue=%@ fgMode=%@ bgMode=%@ bold=%@ faint=%@ italic=%@ blink=%@ underline=%@ unused=%@>",
+            @(c.code), @(c.complexChar), @(c.image), @(c.urlCode),
+            @(c.foregroundColor), @(c.fgGreen), @(c.fgBlue),
+            @(c.backgroundColor), @(c.bgGreen), @(c.bgBlue), modes[c.foregroundColorMode],
+            modes[c.backgroundColorMode], @(c.bold), @(c.faint), @(c.italic), @(c.blink),
+            @(c.underline), @(c.unused)];
 }
 
 // Convert a string into an array of screen characters, dealing with surrogate

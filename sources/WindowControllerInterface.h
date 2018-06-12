@@ -7,6 +7,7 @@
 #import "PTYWindow.h"
 
 @class iTermPopupWindowController;
+@class iTermRestorableSession;
 @class PSMTabBarControl;
 @class PTYSession;
 @class PTYTab;
@@ -30,7 +31,7 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 // Called by VT100Screen when it wants to resize a window for a
 // session-initiated resize. It resizes the session, then the window, then all
 // sessions to fit the new window size.
-- (void)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
+- (BOOL)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
 
 // Is the window in traditional fullscreen mode?
 - (BOOL)fullScreen;
@@ -38,6 +39,7 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 // Returns true if the window is fullscreen in either Lion-style or
 // pre-Lion-style fullscreen.
 - (BOOL)anyFullScreen;
+- (BOOL)movesWhenDraggedOntoSelf;
 
 // Close a session
 - (void)closeSession:(PTYSession*)aSession;
@@ -174,6 +176,8 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 - (void)currentSessionWordAtCursorDidBecome:(NSString *)word;
 
+- (void)storeWindowStateInRestorableSession:(iTermRestorableSession *)restorableSession;
+
 #pragma mark - Tabs
 
 // Close a tab and resize/close the window if needed.
@@ -276,6 +280,8 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 - (void)openPasswordManagerToAccountName:(NSString *)name inSession:(PTYSession *)session;
 
+- (void)tabDidClearScrollbackBufferInSession:(PTYSession *)session;
+
 #pragma mark - Instant replay
 
 // Begin instant replay on a session.
@@ -358,7 +364,7 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 // Create a new split with the specified bookmark. The passed-in session is
 // inserted either before (left/above) or after (right/below) the target
-// session. If performSetup is set, then setupSession:title:withSize: is
+// session. If performSetup is set, then setupSession:withSize: is
 // called.
 - (void)splitVertically:(BOOL)isVertical
                  before:(BOOL)before
@@ -381,6 +387,9 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 // Remove the ACH window. It won't come back until showAutoCommandHistoryForSession is called.
 - (void)hideAutoCommandHistoryForSession:(PTYSession *)session;
+
+// Should updateAutoCommandHistoryForPrefix:inSession:popIfNeeded: be called?
+- (BOOL)wantsCommandHistoryUpdatesFromSession:(PTYSession *)session;
 
 // Set the current command prefix for a given session, updating the ACH window
 // if open. If it was shown with showAutoCommandHistoryForSession but then

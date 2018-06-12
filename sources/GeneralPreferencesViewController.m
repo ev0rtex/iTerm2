@@ -56,6 +56,9 @@ enum {
     // Save copy paste history
     IBOutlet NSButton *_savePasteHistory;
 
+    // Use GPU?
+    IBOutlet NSButton *_gpuRendering;
+
     // Enable bonjour
     IBOutlet NSButton *_enableBonjour;
 
@@ -123,6 +126,7 @@ enum {
 - (void)awakeFromNib {
     PreferenceInfo *info;
 
+    __weak __typeof(self) weakSelf = self;
     [self defineControl:_openBookmark
                     key:kPreferenceKeyOpenBookmark
                    type:kPreferenceInfoTypeCheckbox];
@@ -131,30 +135,38 @@ enum {
                     key:kPreferenceKeyOpenArrangementAtStartup
                    type:kPreferenceInfoTypeCheckbox
          settingChanged:^(id sender) {
-             switch ([_openWindowsAtStartup selectedTag]) {
+             __strong __typeof(weakSelf) strongSelf = weakSelf;
+             if (!strongSelf) {
+                 return;
+             }
+             switch ([strongSelf->_openWindowsAtStartup selectedTag]) {
                  case kUseSystemWindowRestorationSettingTag:
-                     [self setBool:NO forKey:kPreferenceKeyOpenArrangementAtStartup];
-                     [self setBool:NO forKey:kPreferenceKeyOpenNoWindowsAtStartup];
+                     [strongSelf setBool:NO forKey:kPreferenceKeyOpenArrangementAtStartup];
+                     [strongSelf setBool:NO forKey:kPreferenceKeyOpenNoWindowsAtStartup];
                      break;
 
                  case kOpenDefaultWindowArrangementTag:
-                     [self setBool:YES forKey:kPreferenceKeyOpenArrangementAtStartup];
-                     [self setBool:NO forKey:kPreferenceKeyOpenNoWindowsAtStartup];
+                     [strongSelf setBool:YES forKey:kPreferenceKeyOpenArrangementAtStartup];
+                     [strongSelf setBool:NO forKey:kPreferenceKeyOpenNoWindowsAtStartup];
                      break;
 
                  case kDontOpenAnyWindowsTag:
-                     [self setBool:NO forKey:kPreferenceKeyOpenArrangementAtStartup];
-                     [self setBool:YES forKey:kPreferenceKeyOpenNoWindowsAtStartup];
+                     [strongSelf setBool:NO forKey:kPreferenceKeyOpenArrangementAtStartup];
+                     [strongSelf setBool:YES forKey:kPreferenceKeyOpenNoWindowsAtStartup];
                      break;
              }
          } update:^BOOL{
-             if ([self boolForKey:kPreferenceKeyOpenNoWindowsAtStartup]) {
-                 [_openWindowsAtStartup selectItemWithTag:kDontOpenAnyWindowsTag];
+             __strong __typeof(weakSelf) strongSelf = weakSelf;
+             if (!strongSelf) {
+                 return NO;
+             }
+             if ([strongSelf boolForKey:kPreferenceKeyOpenNoWindowsAtStartup]) {
+                 [strongSelf->_openWindowsAtStartup selectItemWithTag:kDontOpenAnyWindowsTag];
              } else if ([WindowArrangements count] &&
                         [self boolForKey:kPreferenceKeyOpenArrangementAtStartup]) {
-                 [_openWindowsAtStartup selectItemWithTag:kOpenDefaultWindowArrangementTag];
+                 [strongSelf->_openWindowsAtStartup selectItemWithTag:kOpenDefaultWindowArrangementTag];
              } else {
-                 [_openWindowsAtStartup selectItemWithTag:kUseSystemWindowRestorationSettingTag];
+                 [strongSelf->_openWindowsAtStartup selectItemWithTag:kUseSystemWindowRestorationSettingTag];
              }
              return YES;
          }];
@@ -183,6 +195,15 @@ enum {
         [[iTermShellHistoryController sharedInstance] backingStoreTypeDidChange];
     };
 
+    if (@available(macOS 10.12, *)) {
+        [self defineControl:_gpuRendering
+                        key:kPreferenceKeyUseMetal
+                       type:kPreferenceInfoTypeCheckbox];
+    } else {
+        _gpuRendering.enabled = NO;
+        _gpuRendering.state = NSOffState;
+    }
+    
     [self defineControl:_enableBonjour
                     key:kPreferenceKeyAddBonjourHostsToProfiles
                             type:kPreferenceInfoTypeCheckbox];
@@ -207,9 +228,13 @@ enum {
                           type:kPreferenceInfoTypeCheckbox];
     // Called when user interacts with control
     info.customSettingChangedHandler = ^(id sender) {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"NoSyncNeverRemindPrefsChangesLostForFile"];
         NSNumber *value;
-        if ([_autoSaveOnQuit state] == NSOnState) {
+        if ([strongSelf->_autoSaveOnQuit state] == NSOnState) {
             value = @0;
         } else {
             value = @1;
@@ -221,6 +246,10 @@ enum {
     // Called on programmatic change (e.g., selecting a different profile. Returns YES to avoid
     // normal code path.
     info.onUpdate = ^BOOL () {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return NO;
+        }
         NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
         NSCellStateValue state;
         if ([userDefaults boolForKey:@"NoSyncNeverRemindPrefsChangesLostForFile"] &&
@@ -229,7 +258,7 @@ enum {
         } else {
             state = NSOffState;
         }
-        _autoSaveOnQuit.state = state;
+        strongSelf->_autoSaveOnQuit.state = state;
         return YES;
     };
     info.onUpdate();
@@ -284,7 +313,7 @@ enum {
                            key:kPreferenceKeyOpenTmuxWindowsIn
                           type:kPreferenceInfoTypePopup];
     // This is how it was done before the great refactoring, but I don't see why it's needed.
-    info.onChange = ^() { [self postRefreshNotification]; };
+    info.onChange = ^() { [weakSelf postRefreshNotification]; };
 
     info = [self defineControl:_tmuxDashboardLimit
                            key:kPreferenceKeyTmuxDashboardLimit
@@ -349,7 +378,7 @@ enum {
             if ([self choosePrefsCustomFolder]) {
                 // User didn't hit cancel; if he chose a writable directory, ask if he wants to write to it.
                 if ([[iTermRemotePreferences sharedInstance] remoteLocationIsValid]) {
-                    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+                    NSAlert *alert = [[NSAlert alloc] init];
                     alert.messageText = @"Copy local preferences to custom folder now?";
                     [alert addButtonWithTitle:@"Copy"];
                     [alert addButtonWithTitle:@"Don’t Copy"];
@@ -369,8 +398,8 @@ enum {
     [panel setCanChooseDirectories:YES];
     [panel setAllowsMultipleSelection:NO];
 
-    if ([panel runModal] == NSModalResponseOK) {
-        [_prefsCustomFolder setStringValue:[panel legacyDirectory]];
+    if ([panel runModal] == NSModalResponseOK && panel.directoryURL.path) {
+        [_prefsCustomFolder setStringValue:panel.directoryURL.path];
         [self settingChanged:_prefsCustomFolder];
         return YES;
     }  else {

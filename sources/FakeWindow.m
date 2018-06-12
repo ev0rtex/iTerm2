@@ -110,11 +110,11 @@
     [aTerm updateTabColors];
 }
 
-- (void)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height
-{
+- (BOOL)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height {
     hasPendingSizeChange = YES;
     pendingW = width;
     pendingH = height;
+    return YES;
 }
 
 - (BOOL)fullScreen
@@ -232,5 +232,10 @@
 - (void)updateTabColors
 {
 }
+
+- (BOOL)movesWhenDraggedOntoSelf {
+    return NO;
+}
+
 
 @end

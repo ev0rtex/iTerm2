@@ -78,8 +78,7 @@ static const NSInteger kUnicodeVersion = 9;
 }
 
 // Append a block
-- (LineBlock*) _addBlockOfSize: (int) size
-{
+- (LineBlock*)_addBlockOfSize:(int)size {
     LineBlock* block = [[LineBlock alloc] initWithRawBufferSize: size];
     block.mayHaveDoubleWidthCharacter = self.mayHaveDoubleWidthCharacter;
     [blocks addObject:block];
@@ -303,7 +302,7 @@ static int RawNumLines(LineBuffer* buffer, int width) {
     }
 #endif
     if ([blocks count] == 0) {
-        [self _addBlockOfSize: block_size];
+        [self _addBlockOfSize:block_size];
     }
 
     LineBlock* block = [blocks objectAtIndex: ([blocks count] - 1)];
@@ -353,9 +352,9 @@ static int RawNumLines(LineBuffer* buffer, int width) {
             // allocate a new buffer that is large enough to hold this line.
             [block shrinkToFit];
             if (length + prefix_len > block_size) {
-                block = [self _addBlockOfSize: length + prefix_len];
+                block = [self _addBlockOfSize:length + prefix_len];
             } else {
-                block = [self _addBlockOfSize: block_size];
+                block = [self _addBlockOfSize:block_size];
             }
         }
 
@@ -698,6 +697,8 @@ static int RawNumLines(LineBuffer* buffer, int width) {
 }
 
 - (void)findSubstring:(FindContext*)context stopAt:(LineBufferPosition *)stopPosition {
+    NSInteger blockIndex = context.absBlockNum - num_dropped_blocks;
+    const NSInteger numBlocks = blocks.count;  // This avoids involving unsigned integers in comparisons
     if (context.dir > 0) {
         // Search forwards
         if (context.absBlockNum < num_dropped_blocks) {
@@ -705,27 +706,37 @@ static int RawNumLines(LineBuffer* buffer, int width) {
             // NSLog(@"Next to search was dropped. Skip to start");
             context.absBlockNum = num_dropped_blocks;
         }
-        if (context.absBlockNum - num_dropped_blocks >= [blocks count]) {
+        if (blockIndex >= numBlocks) {
             // Got to bottom
             // NSLog(@"Got to bottom");
             context.status = NotFound;
             return;
         }
+        if (blockIndex < 0) {
+            DLog(@"Negative index %@ in forward search", @(blockIndex));
+            context.status = NotFound;
+            return;
+        }
     } else {
         // Search backwards
-        if (context.absBlockNum < num_dropped_blocks) {
+        if (blockIndex < 0) {
             // Got to top
             // NSLog(@"Got to top");
             context.status = NotFound;
             return;
         }
+        if (blockIndex >= numBlocks) {
+            DLog(@"Out of bounds index %@ (>=%@) in backward search", @(blockIndex), @(numBlocks));
+            context.status = NotFound;
+            return;
+        }
     }
 
-    NSAssert(context.absBlockNum - num_dropped_blocks >= 0, @"bounds check");
-    NSAssert(context.absBlockNum - num_dropped_blocks < [blocks count], @"bounds check");
-    LineBlock* block = [blocks objectAtIndex:context.absBlockNum - num_dropped_blocks];
+    assert(blockIndex >= 0);
+    assert(blockIndex < numBlocks);
+    LineBlock* block = [blocks objectAtIndex:blockIndex];
 
-    if (context.absBlockNum - num_dropped_blocks == 0 &&
+    if (blockIndex == 0 &&
         context.offset != -1 &&
         context.offset < [block startOffset]) {
         if (context.dir > 0) {

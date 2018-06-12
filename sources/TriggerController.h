@@ -17,8 +17,8 @@
 @interface TriggerController : NSWindowController <NSWindowDelegate>
 
 @property (nonatomic, copy) NSString *guid;
-@property (nonatomic, assign) BOOL hasSelection;
-@property (nonatomic, assign) IBOutlet id<TriggerDelegate> delegate;
+@property (nonatomic) BOOL hasSelection;
+@property (nonatomic, weak) IBOutlet id<TriggerDelegate> delegate;
 @property (nonatomic, readonly) NSTableView *tableView;
 
 - (void)windowWillOpen;

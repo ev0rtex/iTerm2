@@ -9,7 +9,7 @@
 #import "iTermCapturedOutputMark.h"
 #import "iTermColorMap.h"
 #import "iTermExpose.h"
-#import "iTermGrowlDelegate.h"
+#import "iTermNotificationController.h"
 #import "iTermImage.h"
 #import "iTermImageInfo.h"
 #import "iTermImageMark.h"
@@ -205,7 +205,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         [self setInitialTabStops];
         linebuffer_ = [[LineBuffer alloc] init];
 
-        [iTermGrowlDelegate sharedInstance];
+        [iTermNotificationController sharedInstance];
 
         dvr_ = [DVR alloc];
         [dvr_ initWithBufferCapacity:[iTermPreferences intForKey:kPreferenceKeyInstantReplayMemoryMegabytes] * 1024 * 1024];
@@ -943,6 +943,8 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
     [intervalTree_ release];
     intervalTree_ = [[IntervalTree alloc] init];
     [self reloadMarkCache];
+    self.lastCommandMark = nil;
+    [delegate_ screenDidClearScrollbackBuffer:self];
 }
 
 - (void)appendScreenChars:(screen_char_t *)line
@@ -1406,6 +1408,17 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         NSColor *foreground = colors[kHighlightForegroundColor];
         NSColor *background = colors[kHighlightBackgroundColor];
         [self highlightRun:gridRun withForegroundColor:foreground backgroundColor:background];
+    }
+}
+
+- (void)linkTextInRange:(NSRange)range
+basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
+                  URLCode:(unsigned short)code {
+    long long lineNumber = absoluteLineNumber - self.totalScrollbackOverflow - self.numberOfScrollbackLines;
+    
+    VT100GridRun gridRun = [currentGrid_ gridRunFromRange:range relativeToRow:lineNumber];
+    if (gridRun.length > 0) {
+        [self linkRun:gridRun withURLCode:code];
     }
 }
 
@@ -2434,7 +2447,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
     currentGrid_.cursorY++;
 }
 
-- (void)terminalAppendTabAtCursor {
+- (void)terminalAppendTabAtCursor:(BOOL)setBackgroundColors {
     int rightMargin;
     if (currentGrid_.useScrollRegionCols) {
         rightMargin = currentGrid_.rightMargin;
@@ -2470,15 +2483,28 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
     }
     if (allNulls) {
         int i;
+        screen_char_t filler;
+        InitializeScreenChar(&filler, [terminal_ foregroundColorCode], [terminal_ backgroundColorCode]);
+        filler.code = TAB_FILLER;
         for (i = currentGrid_.cursorX; i < nextTabStop - 1; i++) {
-            aLine[i].image = NO;
-            aLine[i].complexChar = NO;
-            aLine[i].code = TAB_FILLER;
+            if (setBackgroundColors) {
+                aLine[i] = filler;
+            } else {
+                aLine[i].image = NO;
+                aLine[i].complexChar = NO;
+                aLine[i].code = TAB_FILLER;
+            }
         }
 
-        aLine[i].image = NO;
-        aLine[i].complexChar = NO;
-        aLine[i].code = '\t';
+        if (setBackgroundColors) {
+            screen_char_t tab = filler;
+            tab.code = '\t';
+            aLine[i] = tab;
+        } else {
+            aLine[i].image = NO;
+            aLine[i].complexChar = NO;
+            aLine[i].code = '\t';
+        }
     }
     currentGrid_.cursorX = nextTabStop;
 }
@@ -2507,6 +2533,9 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 {
     [currentGrid_ moveCursorLeft:n];
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (void)terminalCursorDown:(int)n andToStartOfLine:(BOOL)toStart {
@@ -2515,12 +2544,18 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         [currentGrid_ moveCursorToLeftMargin];
     }
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (void)terminalCursorRight:(int)n
 {
     [currentGrid_ moveCursorRight:n];
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (void)terminalCursorUp:(int)n andToStartOfLine:(BOOL)toStart{
@@ -2529,12 +2564,18 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         [currentGrid_ moveCursorToLeftMargin];
     }
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (void)terminalMoveCursorToX:(int)x y:(int)y
 {
     [self cursorToX:x Y:y];
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (BOOL)terminalShouldSendReport
@@ -2686,6 +2727,9 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         [currentGrid_ moveCursorToLeftMargin];
     }
     [delegate_ screenTriggerableChangeDidOccur];
+    if (commandStartX_ != -1) {
+        [delegate_ screenCommandDidChangeWithRange:[self commandRange]];
+    }
 }
 
 - (void)terminalReverseIndex {
@@ -2839,11 +2883,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
 - (void)terminalSetWindowTitle:(NSString *)title {
     if ([delegate_ screenAllowTitleSetting]) {
-        NSString *newTitle = [[title copy] autorelease];
-        if ([delegate_ screenShouldSyncTitle]) {
-            newTitle = [NSString stringWithFormat:@"%@: %@", [delegate_ screenNameExcludingJob], newTitle];
-        }
-        [delegate_ screenSetWindowTitle:newTitle];
+        [delegate_ screenSetWindowTitle:title];
     }
 
     // If you know to use RemoteHost then assume you also use CurrentDirectory. Innocent window title
@@ -2860,11 +2900,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
 - (void)terminalSetIconTitle:(NSString *)title {
     if ([delegate_ screenAllowTitleSetting]) {
-        NSString *newTitle = [[title copy] autorelease];
-        if ([delegate_ screenShouldSyncTitle]) {
-            newTitle = [NSString stringWithFormat:@"%@: %@", [delegate_ screenNameExcludingJob], newTitle];
-        }
-        [delegate_ screenSetName:newTitle];
+        [delegate_ screenSetName:title];
     }
 }
 
@@ -3055,9 +3091,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
 - (NSString *)terminalIconTitle {
     if (allowTitleReporting_ && [self terminalIsTrusted]) {
-        // TODO: Should be something like screenRawName (which doesn't exist yet but would return
-        // [self rawName]), not screenWindowTitle, right?
-        return [delegate_ screenWindowTitle] ? [delegate_ screenWindowTitle] : [delegate_ screenDefaultName];
+        return [delegate_ screenIconTitle];
     } else {
         return @"";
     }
@@ -3090,8 +3124,8 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
                                     [delegate_ screenName],
                                     [delegate_ screenNumber],
                                     message];
-        BOOL sent = [[iTermGrowlDelegate sharedInstance]
-                        growlNotify:@"Alert"
+        BOOL sent = [[iTermNotificationController sharedInstance]
+                                 notify:@"Alert"
                         withDescription:description
                         andNotification:@"Customized Message"
                             windowIndex:[delegate_ screenWindowIndex]
@@ -3455,14 +3489,26 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
     iTermImage *image;
     if (nativeImage) {
         image = [iTermImage imageWithNativeImage:nativeImage];
+        DLog(@"Image is native");
     } else {
         image = [iTermImage imageWithCompressedData:data];
     }
     const BOOL isBroken = !image;
     if (isBroken) {
+        DLog(@"Image is broken");
         image = [iTermImage imageWithNativeImage:[NSImage imageNamed:@"broken_image"]];
         assert(image);
     }
+
+    NSSize scaledSize = image.size;
+    CGFloat scale;
+    if ([iTermAdvancedSettingsModel retinaInlineImages]) {
+        scale = MAX(1, [delegate_ screenBackingScaleFactor]);
+    } else {
+        scale = 1;
+    }
+    scaledSize.width /= scale;
+    scaledSize.height /= scale;
 
     BOOL needsWidth = NO;
     NSSize cellSize = [delegate_ screenCellSize];
@@ -3480,7 +3526,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
         case kVT100TerminalUnitsAuto:
             if (heightUnits == kVT100TerminalUnitsAuto) {
-                width = ceil((double)image.size.width / cellSize.width);
+                width = ceil((double)scaledSize.width / cellSize.width);
             } else {
                 needsWidth = YES;
             }
@@ -3500,16 +3546,16 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
         case kVT100TerminalUnitsAuto:
             if (widthUnits == kVT100TerminalUnitsAuto) {
-                height = ceil((double)image.size.height / cellSize.height);
+                height = ceil((double)scaledSize.height / cellSize.height);
             } else {
-                double aspectRatio = image.size.width / image.size.height;
+                double aspectRatio = scaledSize.width / scaledSize.height;
                 height = ((double)(width * cellSize.width) / aspectRatio) / cellSize.height;
             }
             break;
     }
 
     if (needsWidth) {
-        double aspectRatio = image.size.width / image.size.height;
+        double aspectRatio = scaledSize.width / scaledSize.height;
         width = ((double)(height * cellSize.height) * aspectRatio) / cellSize.width;
     }
 
@@ -3550,12 +3596,14 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
                                            fractionalInset);
     iTermImageInfo *imageInfo = GetImageInfo(c.code);
     imageInfo.broken = isBroken;
+    DLog(@"Append %d rows of image characters with %d columns. The value of c.image is %@", height, width, @(c.image));
     for (int y = 0; y < height; y++) {
         if (y > 0) {
             [self linefeed];
         }
         for (int x = xOffset; x < xOffset + width && x < screenWidth; x++) {
             SetPositionInImageChar(&c, x - xOffset, y);
+            // DLog(@"Set character at %@,%@: %@", @(x), @(currentGrid_.cursorY), DebugStringForScreenChar(c));
             [currentGrid_ setCharsFrom:VT100GridCoordMake(x, currentGrid_.cursorY)
                                     to:VT100GridCoordMake(x, currentGrid_.cursorY)
                                 toChar:c];
@@ -3595,6 +3643,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 
 - (void)terminalDidFinishReceivingFile {
     if (inlineFileInfo_) {
+        DLog(@"Inline file received");
         // TODO: Handle objects other than images.
         NSData *data = [NSData dataWithBase64EncodedString:inlineFileInfo_[kInlineFileBase64String]];
         [self appendImageAtCursorWithName:inlineFileInfo_[kInlineFileName]
@@ -3610,6 +3659,7 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
         inlineFileInfo_ = nil;
         [delegate_ screenDidFinishReceivingInlineFile];
     } else {
+        DLog(@"Download finished");
         [delegate_ screenDidFinishReceivingFile];
     }
 }
@@ -3833,6 +3883,9 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
     // FinalTerm uses this to define the start of a collapsable region. That would be a nightmare
     // to add to iTerm, and our answer to this is marks, which already existed anyway.
     [delegate_ screenPromptDidStartAtLine:[self numberOfScrollbackLines] + self.cursorY - 1];
+    if ([iTermAdvancedSettingsModel resetSGROnPrompt]) {
+        [terminal_ resetGraphicRendition];
+    }
 }
 
 - (void)terminalCommandDidStart {
@@ -4241,6 +4294,17 @@ static NSString *const kInilineFileInset = @"inset";  // NSValue of NSEdgeInsets
 - (void)dumpScreen
 {
     NSLog(@"%@", [self debugString]);
+}
+
+- (void)linkRun:(VT100GridRun)run
+    withURLCode:(unsigned short)code {
+    
+    for (NSValue *value in [currentGrid_ rectsForRun:run]) {
+        VT100GridRect rect = [value gridRectValue];
+        [currentGrid_ setURLCode:code
+                      inRectFrom:rect.origin
+                              to:VT100GridRectMax(rect)];
+    }
 }
 
 // Set the color of prototypechar to all chars between startPoint and endPoint on the screen.

@@ -20,6 +20,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic) VT100GridCoord coord;
 @property (nonatomic) ITermCursorType type;
 @property (nonatomic, strong) NSColor *cursorColor;
+@property (nonatomic) BOOL doubleWidth;
 
 // Block cursors care about drawing the character overtop the cursor in a
 // different color than the character would normally be. If this is set, the
@@ -64,7 +65,11 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic, readonly) NSColor *timestampsBackgroundColor;
 @property (nonatomic, readonly) NSColor *timestampsTextColor;
 @property (nonatomic, readonly) long long firstVisibleAbsoluteLineNumber;
+@property (nonatomic, readonly) BOOL cutOutLeftCorner;
+@property (nonatomic, readonly) BOOL cutOutRightCorner;
+@property (nonatomic, readonly) NSEdgeInsets edgeInsets;
 
+// Initialize sketchPtr to 0. The number of set bits estimates the unique number of color combinations.
 - (void)metalGetGlyphKeys:(iTermMetalGlyphKey *)glyphKeys
                attributes:(iTermMetalGlyphAttributes *)attributes
                 imageRuns:(NSMutableArray<iTermMetalImageRun *> *)imageRuns
@@ -74,7 +79,8 @@ NS_CLASS_AVAILABLE(10_11, NA)
                       row:(int)row
                     width:(int)width
            drawableGlyphs:(int *)drawableGlyphsPtr
-                     date:(out NSDate * _Nonnull * _Nonnull)date;
+                     date:(out NSDate * _Nonnull * _Nonnull)date
+                     sketch:(out NSUInteger *)sketchPtr;
 
 - (nullable iTermMetalCursorInfo *)metalDriverCursorInfo;
 
@@ -97,6 +103,10 @@ NS_CLASS_AVAILABLE(10_11, NA)
 - (void)enumerateIndicatorsInFrame:(NSRect)frame block:(void (^)(iTermIndicatorDescriptor *))block;
 
 - (void)metalEnumerateHighlightedRows:(void (^)(vector_float3 color, NSTimeInterval age, int row))block;
+
+- (void)setDebugString:(NSString *)debugString;
+
+- (iTermData *)lineForRow:(int)y;
 
 @end
 
@@ -123,11 +133,24 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic, readonly) NSString *identifier;
 @property (atomic) BOOL captureDebugInfoForNextFrame;
 
-- (nullable instancetype)initWithMetalKitView:(nonnull MTKView *)mtkView;
+- (instancetype)init NS_UNAVAILABLE;
+- (nullable instancetype)initWithDevice:(nonnull id<MTLDevice>)device NS_DESIGNATED_INITIALIZER;
+
 - (void)setCellSize:(CGSize)cellSize
 cellSizeWithoutSpacing:(CGSize)cellSizeWithoutSpacing
            gridSize:(VT100GridSize)gridSize
               scale:(CGFloat)scale;
+
+// Draw and return after the GPU's completion callback is run.
+// enableSetNeedsDisplay should be NO.
+// Returns YES on success, NO if resources were insufficient
+- (BOOL)drawSynchronouslyInView:(MTKView *)view;
+
+// Draw and return immediately, calling completion block after GPU's completion
+// block is called.
+// enableSetNeedsDisplay should be NO.
+// The arg to completion is YES on success and NO if the draw was aborted for lack of resources.
+- (void)drawAsynchronouslyInView:(MTKView *)view completion:(void (^)(BOOL))completion;
 
 @end
 

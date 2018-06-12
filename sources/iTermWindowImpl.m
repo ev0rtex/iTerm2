@@ -79,6 +79,7 @@ ITERM_WEAKLY_REFERENCEABLE
         [super performMiniaturize:sender];
     } else {
         // NSWindow's performMiniaturize gates miniaturization on the presence of a miniaturize button.
+        DLog(@"performMiniaturize calling [self miniaturize:]");
         [self miniaturize:self];
     }
 }
@@ -395,6 +396,13 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (NSWindowTabbingMode)tabbingMode {
     return NSWindowTabbingModeDisallowed;
+}
+
+- (void)setFrame:(NSRect)frameRect display:(BOOL)flag {
+    DLog(@"setFrame:%@ display:%@ from\n%@",
+         NSStringFromRect(frameRect), @(flag),
+         [NSThread callStackSymbols]);
+    [super setFrame:frameRect display:flag];
 }
 
 NS_ASSUME_NONNULL_END

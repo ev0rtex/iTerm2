@@ -8,6 +8,7 @@
 
 #import "iTermTabBarControlView.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermPreferences.h"
 #import "DebugLogging.h"
 #import "NSObject+iTerm.h"
 #import "NSView+iTerm.h"
@@ -32,6 +33,9 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
     if (self) {
         [self setTabsHaveCloseButtons:![iTermAdvancedSettingsModel eliminateCloseButtons]];
         self.minimumTabDragDistance = [iTermAdvancedSettingsModel minimumTabDragDistance];
+        // This used to depend on job but it's too difficult to do now that different sessions might
+        // have different title formats.
+        self.ignoreTrailingParentheticalsForSmartTruncation = YES;
     }
     return self;
 }

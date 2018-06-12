@@ -21,8 +21,8 @@
 static NSInteger kNonAsciiFontButtonTag = 1;
 
 @interface ProfilesTextPreferencesViewController ()
-@property(nonatomic, retain) NSFont *normalFont;
-@property(nonatomic, retain) NSFont *nonAsciiFont;
+@property(nonatomic, strong) NSFont *normalFont;
+@property(nonatomic, strong) NSFont *nonAsciiFont;
 @end
 
 @implementation ProfilesTextPreferencesViewController {
@@ -70,9 +70,6 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_normalFont release];
-    [_nonAsciiFont release];
-    [super dealloc];
 }
 
 - (void)awakeFromNib {
@@ -83,11 +80,19 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                                              selector:@selector(reloadProfiles)
                                                  name:kReloadAllProfiles
                                                object:nil];
+    __weak __typeof(self) weakSelf = self;
     [self defineControl:_cursorType
                     key:KEY_CURSOR_TYPE
                    type:kPreferenceInfoTypeMatrix
          settingChanged:^(id sender) { [self setInt:[[sender selectedCell] tag] forKey:KEY_CURSOR_TYPE]; }
-                 update:^BOOL{ [_cursorType selectCellWithTag:[self intForKey:KEY_CURSOR_TYPE]]; return YES; }];
+                 update:^BOOL{
+                     __strong __typeof(weakSelf) strongSelf = weakSelf;
+                     if (!strongSelf) {
+                         return NO;
+                     }
+                     [strongSelf->_cursorType selectCellWithTag:[self intForKey:KEY_CURSOR_TYPE]];
+                     return YES;
+                 }];
 
     [self defineControl:_blinkingCursor
                     key:KEY_BLINKING_CURSOR
@@ -125,6 +130,10 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                                            key:KEY_AMBIGUOUS_DOUBLE_WIDTH
                                           type:kPreferenceInfoTypeCheckbox];
     info.customSettingChangedHandler = ^(id sender) {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
         BOOL isOn = [sender state] == NSOnState;
         if (isOn) {
             static NSString *const kWarnAboutAmbiguousWidth = @"NoSyncWarnAboutAmbiguousWidth";
@@ -142,10 +151,10 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                                         identifier:kWarnAboutAmbiguousWidth
                                        silenceable:kiTermWarningTypePermanentlySilenceable];
             if (selection == kiTermWarningSelection0) {
-                [self setBool:YES forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
+                [strongSelf setBool:YES forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
             }
         } else {
-            [self setBool:NO forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
+            [strongSelf setBool:NO forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
         }
     };
 
@@ -161,11 +170,19 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                            key:KEY_UNICODE_VERSION
                           type:kPreferenceInfoTypeCheckbox
                 settingChanged:^(id sender) {
-                    const NSInteger version = (_unicodeVersion9.state == NSOnState) ? 9 : 8;
-                    [self setInteger:version forKey:KEY_UNICODE_VERSION];
+                    __strong __typeof(weakSelf) strongSelf = weakSelf;
+                    if (!strongSelf) {
+                        return;
+                    }
+                    const NSInteger version = (strongSelf->_unicodeVersion9.state == NSOnState) ? 9 : 8;
+                    [strongSelf setInteger:version forKey:KEY_UNICODE_VERSION];
                 }
                         update:^BOOL{
-                            _unicodeVersion9.state = [self integerForKey:KEY_UNICODE_VERSION] == 9 ? NSOnState : NSOffState;
+                            __strong __typeof(weakSelf) strongSelf = weakSelf;
+                            if (!strongSelf) {
+                                return NO;
+                            }
+                            strongSelf->_unicodeVersion9.state = [strongSelf integerForKey:KEY_UNICODE_VERSION] == 9 ? NSOnState : NSOffState;
                             return YES;
                         }];
 
@@ -181,17 +198,17 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     info = [self defineControl:_useNonAsciiFont
                            key:KEY_USE_NONASCII_FONT
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^{ [self updateNonAsciiFontViewVisibility]; };
+    info.observer = ^{ [weakSelf updateNonAsciiFontViewVisibility]; };
 
     info = [self defineControl:_asciiAntiAliased
                            key:KEY_ASCII_ANTI_ALIASED
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^{ [self updateWarnings]; };
+    info.observer = ^{ [weakSelf updateWarnings]; };
 
     info = [self defineControl:_nonasciiAntiAliased
                            key:KEY_NONASCII_ANTI_ALIASED
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^{ [self updateWarnings]; };
+    info.observer = ^{ [weakSelf updateWarnings]; };
 
     [self updateFontsDescriptions];
     [self updateNonAsciiFontViewVisibility];
@@ -199,6 +216,11 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 - (void)unicodeVersionDidChange {
     [self infoForControl:_unicodeVersion9].onUpdate();
+}
+
+- (void)windowWillClose {
+    [super windowWillClose];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)reloadProfile {
@@ -214,11 +236,11 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 - (void)updateNonAsciiFontViewVisibility {
     _nonAsciiFontView.hidden = ![self boolForKey:KEY_USE_NONASCII_FONT];
-    ((iTermSizeRememberingView *)self.view).originalSize = self.preferredContentSize;
+    ((iTermSizeRememberingView *)self.view).originalSize = self.myPreferredContentSize;
     [self.delegate profilePreferencesContentViewSizeDidChange:(iTermSizeRememberingView *)self.view];
 }
 
-- (NSSize)preferredContentSize {
+- (NSSize)myPreferredContentSize {
     if ([self boolForKey:KEY_USE_NONASCII_FONT]) {
         return NSMakeSize(NSWidth(self.view.frame), _heightWithNonAsciiControls);
     } else {

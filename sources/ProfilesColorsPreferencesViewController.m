@@ -64,6 +64,8 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
     IBOutlet CPKColorWell *_guideColor;
 
     IBOutlet NSPopUpButton *_presetsPopupButton;
+    IBOutlet NSView *_bwWarning1;
+    IBOutlet NSView *_bwWarning2;
 }
 
 + (NSArray<NSString *> *)presetNames {
@@ -125,7 +127,7 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
         colorWell.action = @selector(settingChanged:);
         colorWell.target = self;
         colorWell.continuous = YES;
-        NSValue *weakViewPointer = [NSValue valueWithPointer:colorWell];
+        __weak NSView *weakColorWell = colorWell;
         colorWell.willClosePopover = ^() {
             // NSSearchField remembers who was first responder before it gained
             // first responder status. That is the popover at this time. When
@@ -134,31 +136,31 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
             // smart and doesn't realize the popover has been deallocated. So
             // this changes its conception of who was the previous first
             // responder and prevents the crash.
-            NSView *unsafeView = [weakViewPointer pointerValue];
-            [unsafeView.window makeFirstResponder:nil];
+            [weakColorWell.window makeFirstResponder:nil];
         };
     }
 
     PreferenceInfo *info;
-
+    __weak __typeof(self) weakSelf = self;
     info = [self defineControl:_useTabColor
                            key:KEY_USE_TAB_COLOR
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^() { [self updateColorControlsEnabled]; };
+    info.observer = ^() { [weakSelf updateColorControlsEnabled]; };
 
     info = [self defineControl:_useUnderlineColor
                            key:KEY_USE_UNDERLINE_COLOR
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^() { [self updateColorControlsEnabled]; };
+    info.observer = ^() { [weakSelf updateColorControlsEnabled]; };
 
     info = [self defineControl:_useSmartCursorColor
                            key:KEY_SMART_CURSOR_COLOR
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^() { [self updateColorControlsEnabled]; };
+    info.observer = ^() { [weakSelf updateColorControlsEnabled]; };
 
-    [self defineControl:_minimumContrast
-                    key:KEY_MINIMUM_CONTRAST
-                   type:kPreferenceInfoTypeSlider];
+    info = [self defineControl:_minimumContrast
+                           key:KEY_MINIMUM_CONTRAST
+                          type:kPreferenceInfoTypeSlider];
+    info.observer = ^() { [weakSelf maybeWarnAboutExcessiveContrast]; };
 
     [self defineControl:_cursorBoost
                     key:KEY_CURSOR_BOOST
@@ -168,7 +170,14 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
                     key:KEY_USE_CURSOR_GUIDE
                    type:kPreferenceInfoTypeCheckbox];
 
+    [self maybeWarnAboutExcessiveContrast];
     [self updateColorControlsEnabled];
+}
+
+- (void)maybeWarnAboutExcessiveContrast {
+    const BOOL hidden = ([self floatForKey:KEY_MINIMUM_CONTRAST] < 0.97);
+    _bwWarning1.hidden = hidden;
+    _bwWarning2.hidden = hidden;
 }
 
 - (void)updateColorControlsEnabled {
@@ -254,7 +263,6 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
                                                      keyEquivalent:@""];
         presetItem.target = self;
         [theMenu addItem:presetItem];
-        [presetItem release];
     }
 }
 
@@ -270,7 +278,7 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
 
     // Display the dialog.  If the OK button was pressed,
     // process the files.
-    if ([openPanel legacyRunModalForDirectory:nil file:nil] == NSModalResponseOK) {
+    if ([openPanel runModal] == NSModalResponseOK) {
         // Get an array containing the full filenames of all
         // files and directories selected.
         for (NSString* filename in [openPanel legacyFilenames]) {
@@ -286,15 +294,15 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
     // Set options.
     [savePanel setAllowedFileTypes:[NSArray arrayWithObject:@"itermcolors"]];
 
-    if ([savePanel legacyRunModalForDirectory:nil file:nil] == NSModalResponseOK) {
-        [self exportColorPresetToFile:[savePanel legacyFilename]];
+    if ([savePanel runModal] == NSModalResponseOK) {
+        [self exportColorPresetToFile:savePanel.URL.path];
     }
 }
 
 - (void)deleteColorPreset:(id)sender {
     iTermColorPresetDictionary *customPresets = [iTermColorPresets customColorPresets];
     if (!customPresets || [customPresets count] == 0) {
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"No deletable color presets.";
         alert.informativeText = @"You cannot erase the built-in presets and no custom presets have been imported.";
         [alert addButtonWithTitle:@"OK"];
@@ -302,11 +310,11 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
         return;
     }
 
-    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+    NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Select a preset to delete:";
     [alert addButtonWithTitle:@"OK"];
     [alert addButtonWithTitle:@"Cancel"];
-    NSPopUpButton *popUpButton = [[[NSPopUpButton alloc] init] autorelease];
+    NSPopUpButton *popUpButton = [[NSPopUpButton alloc] init];
     for (NSString *key in [[customPresets allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         [popUpButton addItemWithTitle:key];
     }
@@ -325,7 +333,7 @@ static NSString * const kColorGalleryURL = @"https://www.iterm2.com/colorgallery
         theDict[key] = [[colorWellDictionary[key] color] dictionaryValue];
     }
     if (![theDict iterm_writePresetToFileWithName:filename]) {
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Save Failed.";
         alert.informativeText = [NSString stringWithFormat:@"Could not save to %@", filename];
         [alert addButtonWithTitle:@"OK"];

@@ -30,6 +30,7 @@
 #import "iTerm.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermApplication.h"
+#import "iTermPreferences.h"
 #import "iTermProgressIndicator.h"
 #import "iTermSystemVersion.h"
 #import "NSTextField+iTerm.h"
@@ -65,14 +66,6 @@ const CGFloat kEdgeWidth = 3;
 
 - (instancetype)initWithCoder:(NSCoder *)aDecoder {
     self = [super initWithCoder:aDecoder];
-    if (self) {
-        _alphaMultiplier = 1;
-    }
-    return self;
-}
-
-- (instancetype)initImageCell:(NSImage *)image {
-    self = [super initImageCell:image];
     if (self) {
         _alphaMultiplier = 1;
     }
@@ -192,7 +185,7 @@ const CGFloat kEdgeWidth = 3;
 @end
 
 @implementation FindViewController {
-    IBOutlet NSSearchField* findBarTextField_;
+    __weak IBOutlet NSSearchField* findBarTextField_;
 
     FindState *savedState_;
     FindState *state_;
@@ -257,7 +250,7 @@ const CGFloat kEdgeWidth = 3;
                                                      name:@"iTermLoadFindStringFromSharedPasteboard"
                                                    object:nil];
         [self loadView];
-        self.view.wantsLayer = [iTermAdvancedSettingsModel useMetal];
+        self.view.wantsLayer = [iTermPreferences boolForKey:kPreferenceKeyUseMetal];
         [[self view] setHidden:YES];
     }
     return self;

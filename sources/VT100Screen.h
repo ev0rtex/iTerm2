@@ -7,7 +7,7 @@
 #import "VT100Token.h"
 
 @class DVR;
-@class iTermGrowlDelegate;
+@class iTermNotificationController;
 @class iTermMark;
 @class iTermStringLine;
 @class LineBuffer;
@@ -122,6 +122,10 @@ extern int kVT100ScreenMinRows;
 - (void)highlightTextInRange:(NSRange)range
    basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
                       colors:(NSDictionary *)colors;
+
+- (void)linkTextInRange:(NSRange)range
+   basedAtAbsoluteLineNumber:(long long)absoluteLineNumber
+                     URLCode:(unsigned short)code;
 
 // Load a frame from a dvr decoder.
 - (void)setFromFrame:(screen_char_t*)s len:(int)len info:(DVRFrameInfo)info;

@@ -16,7 +16,7 @@
 #import "iTermRemotePreferences.h"
 #import "WindowArrangements.h"
 
-#define BLOCK(x) [[^id() { return [self x]; } copy] autorelease]
+#define BLOCK(x) [^id() { return [self x]; } copy]
 
 NSString *const kPreferenceKeyOpenBookmark = @"OpenBookmark";
 NSString *const kPreferenceKeyOpenArrangementAtStartup = @"OpenArrangementAtStartup";
@@ -52,6 +52,7 @@ NSString *const kPreferenceKeyLionStyleFullscren = @"UseLionStyleFullscreen";
 NSString *const kPreferenceKeyOpenTmuxWindowsIn = @"OpenTmuxWindowsIn";
 NSString *const kPreferenceKeyTmuxDashboardLimit = @"TmuxDashboardLimit";
 NSString *const kPreferenceKeyAutoHideTmuxClientSession = @"AutoHideTmuxClientSession";
+NSString *const kPreferenceKeyUseMetal = @"UseMetal";
 
 NSString *const kPreferenceKeyTabStyle = @"TabStyle";
 NSString *const kPreferenceKeyTabPosition = @"TabViewType";
@@ -66,8 +67,8 @@ NSString *const kPreferenceKeyHideMenuBarInFullscreen = @"HideMenuBarInFullscree
 NSString *const kPreferenceKeyUIElement = @"HideFromDockAndAppSwitcher";
 NSString *const kPreferenceKeyFlashTabBarInFullscreen = @"FlashTabBarInFullscreen";
 NSString *const kPreferenceKeyShowWindowNumber = @"WindowNumber";
-NSString *const kPreferenceKeyShowJobName = @"JobName";
-NSString *const kPreferenceKeyShowProfileName = @"ShowBookmarkName";  // The key predates bookmarks being renamed to profiles
+NSString *const kPreferenceKeyShowJobName_Deprecated = @"JobName";
+NSString *const kPreferenceKeyShowProfileName_Deprecated = @"ShowBookmarkName";  // The key predates bookmarks being renamed to profiles
 NSString *const kPreferenceKeyDimOnlyText = @"DimOnlyText";
 NSString *const kPreferenceKeyDimmingAmount = @"SplitPaneDimmingAmount";
 NSString *const kPreferenceKeyDimInactiveSplitPanes = @"DimInactiveSplitPanes";
@@ -222,6 +223,7 @@ static NSString *sPreviousVersion;
                   kPreferenceKeyOpenTmuxWindowsIn: @(kOpenTmuxWindowsAsNativeWindows),
                   kPreferenceKeyTmuxDashboardLimit: @10,
                   kPreferenceKeyAutoHideTmuxClientSession: @NO,
+                  kPreferenceKeyUseMetal: @YES,
 
                   kPreferenceKeyTabStyle: @(TAB_STYLE_LIGHT),
                   kPreferenceKeyTabPosition: @(TAB_POSITION_TOP),
@@ -237,8 +239,8 @@ static NSString *sPreviousVersion;
                   kPreferenceKeyUIElement: @NO,
                   kPreferenceKeyFlashTabBarInFullscreen:@YES,
                   kPreferenceKeyShowWindowNumber: @YES,
-                  kPreferenceKeyShowJobName: @YES,
-                  kPreferenceKeyShowProfileName: @NO,
+                  kPreferenceKeyShowJobName_Deprecated: @YES,
+                  kPreferenceKeyShowProfileName_Deprecated: @NO,
                   kPreferenceKeyDimOnlyText: @NO,
                   kPreferenceKeyDimmingAmount: @0.4,
                   kPreferenceKeyDimInactiveSplitPanes: @YES,
@@ -294,7 +296,6 @@ static NSString *sPreviousVersion;
                   kPreferenceKeyLeftTabBarWidth: @150,
                   kPreferenceKeyDefaultToolbeltWidth: @250,
               };
-        [dict retain];
     }
     return dict;
 }
@@ -334,6 +335,8 @@ static NSString *sPreviousVersion;
                     [defaultValue isKindOfClass:[NSNull class]]);
         case kPreferenceInfoTypeMatrix:
             return [defaultValue isKindOfClass:[NSString class]];
+        case kPreferenceInfoTypeRadioButton:
+            return [defaultValue isKindOfClass:[NSString class]];
         case kPreferenceInfoTypeColorWell:
             return [defaultValue isKindOfClass:[NSDictionary class]];
     }
@@ -352,7 +355,6 @@ static NSString *sPreviousVersion;
         dict = @{ kPreferenceKeyOpenArrangementAtStartup: BLOCK(computedOpenArrangementAtStartup),
                   kPreferenceKeyCustomFolder: BLOCK(computedCustomFolder),
                   kPreferenceKeyCharactersConsideredPartOfAWordForSelection: BLOCK(computedWordChars) };
-        [dict retain];
     }
     return dict;
 }
@@ -479,7 +481,7 @@ static NSString *sPreviousVersion;
         observersForKey = [NSMutableArray array];
         gObservers[key] = observersForKey;
     }
-    [observersForKey addObject:[[block copy] autorelease]];
+    [observersForKey addObject:[block copy]];
 }
 
 + (NSUInteger)maskForModifierTag:(iTermPreferencesModifierTag)tag {

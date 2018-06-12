@@ -67,6 +67,9 @@
 @property(nonatomic, readonly) NSURL *url;
 @property(nonatomic, readonly) NSString *urlParams;
 
+// Records whether the remote side thinks we're in alternate screen mode.
+@property(nonatomic, readonly) BOOL softAlternateScreenMode;
+
 - (void)setStateFromDictionary:(NSDictionary *)dict;
 
 - (void)setForegroundColor:(int)fgColorCode alternateSemantics:(BOOL)altsem;
@@ -102,5 +105,8 @@
 
 // Restores values saved in -saveCursor.
 - (void)restoreCursor;
+
+// Reset colors, etc. Anything affected by SGR.
+- (void)resetGraphicRendition;
 
 @end

@@ -63,18 +63,24 @@ extern BOOL gDebugLogging;
         } \
     } while (0)
 
+// Write to crash log immediately and unconditionally. Use this when you expect to crash right away.
+#define CrashLog(args...) \
+    do { \
+        LogForNextCrash(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args], YES); \
+    } while (0)
+
 // Info log: no private info. Low-volume. Logged to crash reports.
 #define ILog(args...) \
     do { \
         DLog(args); \
-        LogForNextCrash(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args]); \
+        LogForNextCrash(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args], NO); \
     } while (0)
 
 // Error log: no private info. Low-volume. Logged to crash reports.
 #define ELog(args...) \
     do { \
         DLog(args); \
-        LogForNextCrash(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args]); \
+        LogForNextCrash(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args], NO); \
         NSLog(args); \
     } while (0)
 
@@ -112,7 +118,7 @@ extern BOOL gDebugLogging;
       ELog(args); \
       if (TurnOffDebugLoggingSilently()) { \
         dispatch_async(dispatch_get_main_queue(), ^{ \
-          NSAlert *alert = [[[NSAlert alloc] init] autorelease]; \
+          NSAlert *alert = [[NSAlert alloc] init]; \
           alert.messageText = @"Critical Error"; \
           alert.informativeText =  @"A critical error occurred and a debug log was created. Please send /tmp/debuglog.txt to the developers."; \
           [alert addButtonWithTitle:@"OK"]; \
@@ -143,9 +149,22 @@ extern BOOL gDebugLogging;
   } while (0)
 #endif
 
+#if BETA
+#define ITConservativeBetaAssert(condition, args...) \
+  do { \
+    if (!(condition)) { \
+      DLog(@"Crashing because %s from:\n%@", #condition, [NSThread callStackSymbols]); \
+      ELog(args); \
+      assert(NO); \
+    } \
+  } while (0)
+#else  // BETA
+#define ITConservativeBetaAssert(condition, args...)
+#endif
+
 void ToggleDebugLogging(void);
 int DebugLogImpl(const char *file, int line, const char *function, NSString* value);
-void LogForNextCrash(const char *file, int line, const char *function, NSString* value);
+void LogForNextCrash(const char *file, int line, const char *function, NSString* value, BOOL force);
 void TurnOnDebugLoggingSilently(void);
 BOOL TurnOffDebugLoggingSilently(void);
 

@@ -46,21 +46,27 @@
 
 - (void)awakeFromNib {
     PreferenceInfo *info;
+    __weak __typeof(self) weakSelf = self;
     info = [self defineControl:_numScrollbackLines
                            key:KEY_SCROLLBACK_LINES
                           type:kPreferenceInfoTypeIntegerTextField];
     info.range = NSMakeRange(0, 10 * 1000 * 1000);
-
+    info.deferUpdate = YES;
+    
     info = [self defineControl:_unlimitedScrollback
                            key:KEY_UNLIMITED_SCROLLBACK
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^() {
-        BOOL unlimited = [self boolForKey:KEY_UNLIMITED_SCROLLBACK];
-        _numScrollbackLines.enabled = !unlimited;
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        BOOL unlimited = [strongSelf boolForKey:KEY_UNLIMITED_SCROLLBACK];
+        strongSelf->_numScrollbackLines.enabled = !unlimited;
         if (unlimited) {
-            _numScrollbackLines.stringValue = @"";
+            strongSelf->_numScrollbackLines.stringValue = @"";
         } else {
-            _numScrollbackLines.intValue = [self intForKey:KEY_SCROLLBACK_LINES];
+            strongSelf->_numScrollbackLines.intValue = [strongSelf intForKey:KEY_SCROLLBACK_LINES];
         }
     };
 
@@ -76,9 +82,15 @@
     info = [self defineControl:_characterEncoding
                            key:KEY_CHARACTER_ENCODING
                           type:kPreferenceInfoTypeUnsignedIntegerPopup];
+    __weak __typeof(info) weakInfo = info;
     info.onUpdate = ^BOOL() {
-        NSUInteger tag = [self unsignedIntegerForKey:info.key];
-        [_characterEncoding selectItemWithTag:tag];
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return NO;
+        }
+        assert(weakInfo);
+        NSUInteger tag = [self unsignedIntegerForKey:weakInfo.key];
+        [strongSelf->_characterEncoding selectItemWithTag:tag];
         return YES;
     };
 
@@ -95,7 +107,11 @@
                            key:KEY_XTERM_MOUSE_REPORTING
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^() {
-        [_xtermMouseReportingAllowMouseWheel setEnabled:[self boolForKey:KEY_XTERM_MOUSE_REPORTING]];
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        [strongSelf->_xtermMouseReportingAllowMouseWheel setEnabled:[strongSelf boolForKey:KEY_XTERM_MOUSE_REPORTING]];
     };
 
     [self defineControl:_xtermMouseReportingAllowMouseWheel
@@ -130,8 +146,12 @@
                            key:KEY_BOOKMARK_GROWL_NOTIFICATIONS
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^() {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
         BOOL sendNotifications = [self boolForKey:KEY_BOOKMARK_GROWL_NOTIFICATIONS];
-        [_filterAlertsButton setEnabled:sendNotifications];
+        [strongSelf->_filterAlertsButton setEnabled:sendNotifications];
     };
 
     [self defineControl:_bellAlert
@@ -209,8 +229,12 @@ static NSInteger CompareEncodingByLocalizedName(id a, id b, void *unused) {
 }
 
 - (IBAction)showFilterAlertsPanel:(id)sender {
+    __weak __typeof(self) weakSelf = self;
     [self.view.window beginSheet:_filterAlertsPanel completionHandler:^(NSModalResponse returnCode) {
-        [_filterAlertsPanel close];
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf->_filterAlertsPanel close];
+        }
     }];
 }
 

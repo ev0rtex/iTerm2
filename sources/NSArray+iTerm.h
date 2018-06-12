@@ -8,6 +8,8 @@
 
 #import <Foundation/Foundation.h>
 
+@class iTermTuple;
+
 @interface NSArray<ObjectType> (iTerm)
 
 + (NSArray<NSNumber *> *)sequenceWithRange:(NSRange)range;
@@ -24,7 +26,7 @@
 
 // Returns those elements of the array for which block(element) returns YES.
 // block is called on every element in order.
-- (NSArray *)filteredArrayUsingBlock:(BOOL (^)(ObjectType anObject))block;
+- (NSArray *)filteredArrayUsingBlock:(BOOL (NS_NOESCAPE ^)(ObjectType anObject))block;
 - (ObjectType)objectPassingTest:(BOOL (^)(ObjectType element, NSUInteger index, BOOL *stop))block;
 
 // Returns the first object that is a kind of `theClass` for which block returns YES.
@@ -82,6 +84,11 @@
 
 - (void)enumerateCoalescedObjectsWithComparator:(BOOL (^)(ObjectType obj1, ObjectType obj2))comparator
                                           block:(void (^)(ObjectType object, NSUInteger count))block;
+
+- (NSArray<iTermTuple *> *)tuplesWithFirstObjectEqualTo:(id)firstObject;
+- (NSDictionary<id, NSArray<ObjectType> *> *)classifyWithBlock:(id (^)(ObjectType))block;
+- (ObjectType)uncheckedObjectAtIndex:(NSInteger)index;
+
 @end
 
 @interface NSMutableArray<ObjectType> (iTerm)

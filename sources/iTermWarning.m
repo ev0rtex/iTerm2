@@ -1,9 +1,12 @@
 #import "iTermWarning.h"
 
 #import "DebugLogging.h"
+#import "iTermDisclosableView.h"
 #import "NSArray+iTerm.h"
+#import "NSObject+iTerm.h"
 
 static const NSTimeInterval kTemporarySilenceTime = 600;
+static const NSTimeInterval kOneMonthTime = 30 * 24 * 60 * 60;
 static NSString *const kCancel = @"Cancel";
 static id<iTermWarningHandler> gWarningHandler;
 static BOOL gShowingWarning;
@@ -193,6 +196,14 @@ static BOOL gShowingWarning;
             alert.suppressionButton.title = @"Remember my choice for ten minutes";
         }
         alert.showsSuppressionButton = YES;
+    } else if (_warningType == kiTermWarningTypeSilencableForOneMonth) {
+        assert(_identifier);
+        if (numNonCancelActions == 1) {
+            alert.suppressionButton.title = @"Suppress this message for 30 days";
+        } else if (numNonCancelActions > 1) {
+            alert.suppressionButton.title = @"Remember my choice for 30 days";
+        }
+        alert.showsSuppressionButton = YES;
     } else if (_warningType == kiTermWarningTypePermanentlySilenceable) {
         assert(_identifier);
         if (numNonCancelActions == 1) {
@@ -204,6 +215,12 @@ static BOOL gShowingWarning;
     }
 
     if (_accessory) {
+        iTermDisclosableView *disclosableView = [iTermDisclosableView castFrom:_accessory];
+        if (disclosableView) {
+            disclosableView.requestLayout = ^{
+                [alert layout];
+            };
+        }
         [alert setAccessoryView:_accessory];
     }
     if (_showHelpBlock) {
@@ -245,6 +262,10 @@ static BOOL gShowingWarning;
         if (_warningType == kiTermWarningTypeTemporarilySilenceable) {
             NSString *theKey = [self.class temporarySilenceKeyForIdentifier:_identifier];
             [userDefaults setDouble:[NSDate timeIntervalSinceReferenceDate] + kTemporarySilenceTime
+                             forKey:theKey];
+        } else if (_warningType == kiTermWarningTypeSilencableForOneMonth) {
+            NSString *theKey = [self.class temporarySilenceKeyForIdentifier:_identifier];
+            [userDefaults setDouble:[NSDate timeIntervalSinceReferenceDate] + kOneMonthTime
                              forKey:theKey];
         } else {
             NSString *theKey = [self.class permanentlySilenceKeyForIdentifier:_identifier];

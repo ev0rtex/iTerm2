@@ -59,7 +59,6 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     BOOL canResize_;
     BOOL isFullscreen_;
     VT100GridSize newSize_;
-    BOOL syncTitle_;
     NSString *windowTitle_;
     NSString *name_;
     NSMutableArray *dirlog_;
@@ -87,7 +86,6 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     canResize_ = YES;
     isFullscreen_ = NO;
     newSize_ = VT100GridSizeMake(0, 0);
-    syncTitle_ = YES;
     windowTitle_ = nil;
     name_ = nil;
     dirlog_ = [NSMutableArray array];
@@ -156,7 +154,7 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     [screen terminalCarriageReturn];
     int expected = 9;
     while (expected < [screen width]) {
-        [screen terminalAppendTabAtCursor];
+        [screen terminalAppendTabAtCursor:NO];
         XCTAssert([screen cursorX] == expected);
         XCTAssert([screen cursorY] == [screen height]);
         expected += 8;
@@ -573,10 +571,6 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     name_ = [[name copy] autorelease];
 }
 
-- (NSString *)screenNameExcludingJob {
-    return @"joblessName";
-}
-
 - (NSString *)screenProfileName {
     return @"Default";
 }
@@ -615,10 +609,6 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
 
 - (BOOL)screenShouldBeginPrinting {
     return printingAllowed_;
-}
-
-- (BOOL)screenShouldSyncTitle {
-    return syncTitle_;
 }
 
 - (void)screenDidAppendStringToCurrentLine:(NSString *)string {
@@ -687,7 +677,7 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     return windowTitle_;
 }
 
-- (NSString *)screenDefaultName {
+- (NSString *)screenIconTitle {
     return @"Default name";
 }
 
@@ -898,6 +888,8 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
 - (void)screenStartTmuxModeWithDCSIdentifier:(NSString *)dcsID {
 }
 
+- (void)screenDidClearScrollbackBuffer:(VT100Screen *)screen {
+}
 
 #pragma mark - iTermSelectionDelegate
 
@@ -2065,9 +2057,9 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     XCTAssert([[screen currentGrid] bottomMargin] == 7);
     XCTAssert(!cursorVisible_);
     [screen terminalCarriageReturn];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert(screen.cursorX == 5);
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert(screen.cursorX == 9);
 }
 
@@ -2840,7 +2832,7 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     [screen terminalCarriageReturn];
     int lastX = screen.cursorX;
     while (1) {
-        [screen terminalAppendTabAtCursor];
+        [screen terminalAppendTabAtCursor:NO];
         if (screen.cursorX == lastX) {
             return actual;
         }
@@ -2873,20 +2865,20 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     [screen terminalMoveCursorToX:1 y:1];
     [screen terminalSetUseColumnScrollRegion:YES];
     [screen terminalSetLeftMargin:0 rightMargin:7];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert(screen.cursorX == 8);
 
     // Tabbing over text doesn't change it
     screen = [self screenWithWidth:20 height:3];
     [screen appendStringAtCursor:@"0123456789"];
     [screen terminalMoveCursorToX:1 y:1];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert([ScreenCharArrayToStringDebug([screen getLineAtScreenIndex:0],
                                             screen.width) isEqualToString:@"0123456789"]);
 
     // Tabbing over all nils replaces them with tab fillers and a tab character at the end
     screen = [self screenWithWidth:20 height:3];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     screen_char_t *line = [screen getLineAtScreenIndex:0];
     for (int i = 0; i < 7; i++) {
         XCTAssert(line[i].code == TAB_FILLER);
@@ -2898,24 +2890,24 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     [screen terminalMoveCursorToX:3 y:1];
     [screen appendStringAtCursor:@"x"];
     [screen terminalMoveCursorToX:1 y:1];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert([ScreenCharArrayToStringDebug([screen getLineAtScreenIndex:0],
                                             screen.width) isEqualToString:@"x"]);
     XCTAssert(screen.cursorX == 9);
 
     // No wrap-around
     screen = [self screenWithWidth:20 height:3];
-    [screen terminalAppendTabAtCursor];  // 9
-    [screen terminalAppendTabAtCursor];  // 15
-    [screen terminalAppendTabAtCursor];  // 19
+    [screen terminalAppendTabAtCursor:NO];  // 9
+    [screen terminalAppendTabAtCursor:NO];  // 15
+    [screen terminalAppendTabAtCursor:NO];  // 19
     XCTAssert(screen.cursorX == 20);
     XCTAssert(screen.cursorY == 1);
 
     // Test backtab (it's simple, no wraparound)
     screen = [self screenWithWidth:20 height:3];
     [screen terminalMoveCursorToX:1 y:2];
-    [screen terminalAppendTabAtCursor];
-    [screen terminalAppendTabAtCursor];
+    [screen terminalAppendTabAtCursor:NO];
+    [screen terminalAppendTabAtCursor:NO];
     XCTAssert(screen.cursorX == 17);
     [screen terminalBackTab:1];
     XCTAssert(screen.cursorX == 9);
@@ -3408,13 +3400,13 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     screen.delegate = (id<VT100ScreenDelegate>)self;
     [screen setMaxScrollbackLines:20];
 
-    // Should come back as joblessName test
-    syncTitle_ = YES;
+//    // Should come back as joblessName test
+//    syncTitle_ = YES;
     [screen terminalSetWindowTitle:@"test"];
     XCTAssert([windowTitle_ isEqualToString:@"joblessName: test"]);
 
-    // Should come back as just test2
-    syncTitle_ = NO;
+//    // Should come back as just test2
+//    syncTitle_ = NO;
     [screen terminalSetWindowTitle:@"test2"];
     XCTAssert([windowTitle_ isEqualToString:@"test2"]);
 
@@ -3450,12 +3442,12 @@ NSLog(@"Known bug: %s should be true, but %s is.", #expressionThatShouldBeTrue, 
     XCTAssert([entry[0] intValue] == 29);  // 20 lines of scrollback + 10th line of display
     XCTAssert([entry[1] isKindOfClass:[NSNull class]]);
 
-    // Test icon title, which is the same, but does not log the pwd.
-    syncTitle_ = YES;
+//    // Test icon title, which is the same, but does not log the pwd.
+//    syncTitle_ = YES;
     [screen terminalSetIconTitle:@"test3"];
     XCTAssert([name_ isEqualToString:@"joblessName: test3"]);
 
-    syncTitle_ = NO;
+//    syncTitle_ = NO;
     [screen terminalSetIconTitle:@"test4"];
     XCTAssert([name_ isEqualToString:@"test4"]);
 }

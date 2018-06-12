@@ -43,8 +43,8 @@
     NSTableViewDelegate,
     NSTableViewDataSource>
 
-@property(nonatomic, assign) IBOutlet id<iTermKeyMappingViewControllerDelegate> delegate;
-@property(nonatomic, retain) IBOutlet NSView *placeholderView;
+@property(nonatomic, weak) IBOutlet id<iTermKeyMappingViewControllerDelegate> delegate;
+@property(nonatomic, strong) IBOutlet NSView *placeholderView;
 
 - (void)hideAddTouchBarItem;
 

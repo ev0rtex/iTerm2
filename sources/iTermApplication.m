@@ -35,6 +35,7 @@
 #import "iTermPreferences.h"
 #import "iTermScriptingWindow.h"
 #import "iTermShortcutInputView.h"
+#import "iTermWindowHacks.h"
 #import "NSArray+iTerm.h"
 #import "NSTextField+iTerm.h"
 #import "NSWindow+iTerm.h"
@@ -46,12 +47,17 @@
 #import "PTYWindow.h"
 
 unsigned short iTermBogusVirtualKeyCode = 0xffff;
+NSString *const iTermApplicationCharacterPaletteWillOpen = @"iTermApplicationCharacterPaletteWillOpen";
+NSString *const iTermApplicationCharacterPaletteDidClose = @"iTermApplicationCharacterPaletteDidClose";
 
 @interface iTermApplication()
 @property(nonatomic, retain) NSStatusItem *statusBarItem;
 @end
 
-@implementation iTermApplication
+@implementation iTermApplication {
+    BOOL _it_characterPanelIsOpen;
+    BOOL _it_characterPanelShouldOpenSoon;
+}
 
 - (void)dealloc {
     [_fakeCurrentEvent release];
@@ -196,6 +202,10 @@ unsigned short iTermBogusVirtualKeyCode = 0xffff;
             [currentTerminal.currentTab setActiveSession:orderedSessions[digit - 1]];
             return YES;
         }
+        if (digit >= 1 && digit <= 9) {
+            // Ignore Modifier+Number if there's no matching split pane. Issue 6624.
+            return YES;
+        }
     }
     return NO;
 }
@@ -214,6 +224,10 @@ unsigned short iTermBogusVirtualKeyCode = 0xffff;
             // Command (or selected modifier)+number: Switch to tab by number.
             DLog(@"Switching tabs");
             [tabView selectTabViewItemAtIndex:digit-1];
+            return YES;
+        }
+        if (digit >= 1 && digit <= 9) {
+            // Ignore Modifier+Number if there's no matching tab. Issue 6624.
             return YES;
         }
     }
@@ -345,6 +359,7 @@ unsigned short iTermBogusVirtualKeyCode = 0xffff;
         }
         DLog(@"NSKeyDown event taking the regular path");
     }
+    
     [super sendEvent:event];
 }
 
@@ -434,5 +449,29 @@ unsigned short iTermBogusVirtualKeyCode = 0xffff;
     }
 }
 
+- (BOOL)it_characterPanelIsOpen {
+    return _it_characterPanelShouldOpenSoon || _it_characterPanelIsOpen;
+}
+
+- (void)orderFrontCharacterPalette:(id)sender {
+    _it_characterPanelShouldOpenSoon = YES;
+    [[NSNotificationCenter defaultCenter] postNotificationName:iTermApplicationCharacterPaletteWillOpen
+                                                        object:nil];
+    [super orderFrontCharacterPalette:sender];
+    const NSTimeInterval deadlineToOpen = ([NSDate timeIntervalSinceReferenceDate] +
+                                           [iTermAdvancedSettingsModel timeToWaitForEmojiPanel]);
+    [iTermWindowHacks pollForCharacterPanelToOpenOrCloseWithCompletion:^BOOL(BOOL open) {
+        if (open && _it_characterPanelShouldOpenSoon) {
+            _it_characterPanelShouldOpenSoon = NO;
+            _it_characterPanelIsOpen = YES;
+        } else if (!open && self.it_characterPanelIsOpen) {
+            self->_it_characterPanelShouldOpenSoon = NO;
+            self->_it_characterPanelIsOpen = NO;
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermApplicationCharacterPaletteDidClose
+                                                                object:nil];
+        }
+        return open || ([NSDate timeIntervalSinceReferenceDate] < deadlineToOpen);  // keep running while open
+    }];
+}
 @end
 

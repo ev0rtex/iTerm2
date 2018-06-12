@@ -72,6 +72,8 @@ typedef NS_ENUM(NSInteger, PTYTextViewSelectionExtensionUnit) {
 
 @protocol PTYTextViewDelegate <NSObject>
 
+@property (nonatomic, readonly) NSEdgeInsets textViewEdgeInsets;
+
 - (BOOL)xtermMouseReporting;
 - (BOOL)xtermMouseReportingAllowMouseWheel;
 - (BOOL)isPasting;
@@ -520,7 +522,10 @@ typedef void (^PTYTextViewDrawingHookBlock)(iTermTextDrawingHelper *);
 
 // Open a semantic history path.
 - (BOOL)openSemanticHistoryPath:(NSString *)path
+                  orRawFilename:(NSString *)rawFileName
                workingDirectory:(NSString *)workingDirectory
+                     lineNumber:(NSString *)lineNumber
+                   columnNumber:(NSString *)columnNumber
                          prefix:(NSString *)prefix
                          suffix:(NSString *)suffix;
 
@@ -587,6 +592,9 @@ typedef void (^PTYTextViewDrawingHookBlock)(iTermTextDrawingHelper *);
 - (void)showFireworks;
 
 - (BOOL)imageIsVisible:(iTermImageInfo *)image;
+
+// Turns on the flicker fixer (if enabled) while drawing.
+- (void)performBlockWithFlickerFixerGrid:(void (NS_NOESCAPE ^)(void))block;
 
 #pragma mark - Testing only
 

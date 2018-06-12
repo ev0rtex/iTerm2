@@ -174,7 +174,7 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
         static id<MTLLibrary> defaultLibrary;
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            defaultLibrary = [_device newDefaultLibrary];
+            defaultLibrary = [self->_device newDefaultLibrary];
         });
         id <MTLFunction> vertexShader = [defaultLibrary newFunctionWithName:_vertexFunctionName];
         ITDebugAssert(vertexShader);
@@ -228,6 +228,7 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
 
 - (void)writeFragmentTexture:(id<MTLTexture>)texture index:(NSUInteger)index toFolder:(NSURL *)folder {
     NSUInteger length = [iTermTexture rawDataSizeForTexture:texture];
+    int samplesPerPixel = [iTermTexture samplesPerPixelForTexture:texture];
     NSMutableData *storage = [NSMutableData dataWithLength:length];
     [texture getBytes:storage.mutableBytes
           bytesPerRow:[iTermTexture bytesPerRowForForTexture:texture]
@@ -236,8 +237,8 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
     NSImage *image = [NSImage imageWithRawData:storage
                                           size:NSMakeSize(texture.width, texture.height)
                                  bitsPerSample:8
-                               samplesPerPixel:4
-                                      hasAlpha:YES
+                               samplesPerPixel:samplesPerPixel
+                                      hasAlpha:samplesPerPixel == 4
                                 colorSpaceName:NSDeviceRGBColorSpace];
     NSString *name = [NSString stringWithFormat:@"texture.%@.%@.png", @(index), texture.label];
     [image saveAsPNGTo:[folder URLByAppendingPathComponent:name].path];
@@ -256,8 +257,8 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
     return tState;
 }
 
-- (void)drawWithRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
-               transientState:(NSDictionary *)transientState {
+- (void)drawWithFrameData:(iTermMetalFrameData *)frameData
+           transientState:(NSDictionary *)transientState {
     [self doesNotRecognizeSelector:_cmd];
 }
 
@@ -347,6 +348,26 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
     return [self textureFromImage:image context:context pool:nil];
 }
 
+- (void)convertWidth:(NSUInteger)width
+              height:(NSUInteger)height
+             toWidth:(NSUInteger *)widthOut
+              height:(NSUInteger *)heightOut
+        notExceeding:(NSInteger)maxSize {
+    if (height > width) {
+        [self convertWidth:height height:width toWidth:heightOut height:widthOut notExceeding:maxSize];
+        return;
+    }
+    // At this point, width >= height
+    if (width > maxSize) {
+        *widthOut = maxSize;
+        const CGFloat aspectRatio = (CGFloat)height / (CGFloat)width;
+        *heightOut = maxSize * aspectRatio;
+    } else {
+        *widthOut = width;
+        *heightOut = height;
+    }
+}
+
 - (id<MTLTexture>)textureFromImage:(NSImage *)image context:(iTermMetalBufferPoolContext *)context pool:(iTermTexturePool *)pool {
     if (!image) {
         return nil;
@@ -356,9 +377,12 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
     CGImageRef imageRef = [image CGImageForProposedRect:&imageRect context:NULL hints:nil];
 
     // Create a suitable bitmap context for extracting the bits of the image
-    NSUInteger width = CGImageGetWidth(imageRef);
-    NSUInteger height = CGImageGetHeight(imageRef);
-
+    NSUInteger width, height;
+    [self convertWidth:CGImageGetWidth(imageRef)
+                height:CGImageGetHeight(imageRef)
+               toWidth:&width
+                height:&height
+          notExceeding:4096];
     if (width == 0 || height == 0) {
         return nil;
     }
@@ -398,6 +422,7 @@ const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight = 3;
 
     [iTermTexture setBytesPerRow:bytesPerRow
                      rawDataSize:height * width * 4
+                 samplesPerPixel:4
                       forTexture:texture];
 
     free(rawData);

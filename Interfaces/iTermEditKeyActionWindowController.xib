@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="11542" systemVersion="16B2657" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none">
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="14109" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none">
     <dependencies>
         <deployment identifier="macosx"/>
-        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="11542"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="14109"/>
         <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
     </dependencies>
     <objects>
@@ -191,6 +191,9 @@
                                             <menuItem title="Toggle Pin Hotkey Window" tag="43" id="foW-Ca-dgS">
                                                 <modifierMask key="keyEquivalentModifierMask"/>
                                             </menuItem>
+                                            <menuItem title="Toggle Mouse Reporting" tag="59" id="4wm-MJ-Y2A">
+                                                <modifierMask key="keyEquivalentModifierMask"/>
+                                            </menuItem>
                                             <menuItem isSeparatorItem="YES" id="svX-cj-e8M"/>
                                             <menuItem title="Run Coprocess" tag="35" id="m6l-mc-bhF"/>
                                             <menuItem isSeparatorItem="YES" id="D8m-Tb-i1k"/>
@@ -199,7 +202,11 @@
                                             <menuItem title="Move End of Selection Back" tag="45" id="L33-q3-stz"/>
                                             <menuItem title="Move End of Selection Forward" tag="46" id="xRC-3K-RlB"/>
                                             <menuItem isSeparatorItem="YES" id="c8c-8I-caf"/>
-                                            <menuItem title="Select Menu Item..." tag="25" id="haJ-OE-peX"/>
+                                            <menuItem title="Invoke Script Function…" tag="60" id="haJ-OE-peX">
+                                                <modifierMask key="keyEquivalentModifierMask" shift="YES"/>
+                                            </menuItem>
+                                            <menuItem isSeparatorItem="YES" id="F8k-hs-TuO"/>
+                                            <menuItem title="Select Menu Item..." tag="25" id="diP-BY-3qB"/>
                                         </items>
                                     </menu>
                                 </popUpButtonCell>

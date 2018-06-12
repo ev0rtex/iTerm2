@@ -60,6 +60,7 @@ typedef struct {
 
 + (ProfileModel*)sharedInstance;
 + (ProfileModel*)sessionsInstance;
++ (NSMutableArray<NSString *> *)debugHistory;
 + (NSString*)freshGuid;
 + (void)migratePromptOnCloseInMutableBookmark:(NSMutableDictionary *)dict;
 + (BOOL)migrated;
@@ -112,7 +113,8 @@ typedef struct {
 // Updates the profile with guid 'origGuid' by replacing all elements except
 // guid in 'bookmark'. The name is preserved if it is different than the
 // original profile's name.
-- (void)setProfilePreservingGuidWithGuid:(NSString *)origGuid fromProfile:(Profile *)bookmark;
+- (void)setProfilePreservingGuidWithGuid:(NSString *)origGuid
+                             fromProfile:(Profile *)bookmark;
 
 // Write to user defaults
 - (void)flush;

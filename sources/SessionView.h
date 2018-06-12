@@ -123,6 +123,14 @@
 
 - (void)sessionViewHideMetalViewUntilNextFrame;
 
+- (void)sessionViewUserScrollDidChange:(BOOL)userScroll;
+
+- (void)sessionViewDidChangeHoverURLVisible:(BOOL)visible;
+- (void)sessionViewNeedsMetalFrameUpdate;
+
+// Please stop using metal and then start again.
+- (void)sessionViewRecreateMetalView;
+
 @end
 
 @interface SessionView : NSView <SessionTitleViewDelegate>
@@ -132,11 +140,11 @@
 // If a modifier+digit switches panes, this is the value of digit. Used to show in title bar.
 @property(nonatomic, assign) int ordinal;
 @property(nonatomic, readonly) iTermAnnouncementViewController *currentAnnouncement;
-@property(nonatomic, assign) id<iTermSessionViewDelegate> delegate;
+@property(nonatomic, weak) id<iTermSessionViewDelegate> delegate;
 @property(nonatomic, readonly) PTYScrollView *scrollview;
+@property(nonatomic, readonly) PTYScroller *verticalScroller;
 @property(nonatomic, readonly) iTermMetalDriver *driver NS_AVAILABLE_MAC(10_11);
 @property(nonatomic, readonly) MTKView *metalView NS_AVAILABLE_MAC(10_11);
-
 @property(nonatomic, readonly) BOOL useMetal NS_AVAILABLE_MAC(10_11);
 - (void)setUseMetal:(BOOL)useMetal dataSource:(id<iTermMetalDriverDataSource>)dataSource NS_AVAILABLE_MAC(10_11);;
 
@@ -184,5 +192,8 @@
 - (SplitSessionHalf)removeSplitSelectionView;
 
 - (void)setHoverURL:(NSString *)url;
+- (BOOL)hasHoverURL;
+- (BOOL)drawFrameSynchronously;
+- (void)reallyUpdateMetalViewFrame;
 
 @end

@@ -27,13 +27,13 @@ static BOOL sAuthenticated;
 @end
 
 @implementation iTermPasswordManagerWindowController {
-    IBOutlet NSTableView *_tableView;
-    IBOutlet NSTableColumn *_accountNameColumn;
-    IBOutlet NSTableColumn *_passwordColumn;
-    IBOutlet NSButton *_removeButton;
-    IBOutlet NSButton *_editButton;
-    IBOutlet NSButton *_enterPasswordButton;
-    IBOutlet iTermSearchField *_searchField;
+    __weak IBOutlet NSTableView *_tableView;
+    __weak IBOutlet NSTableColumn *_accountNameColumn;
+    __weak IBOutlet NSTableColumn *_passwordColumn;
+    __weak IBOutlet NSButton *_removeButton;
+    __weak IBOutlet NSButton *_editButton;
+    __weak IBOutlet NSButton *_enterPasswordButton;
+    __weak IBOutlet iTermSearchField *_searchField;
     NSArray *_accounts;
     NSString *_passwordBeingShown;
     NSInteger _rowForPasswordBeingShown;
@@ -255,17 +255,22 @@ static BOOL sAuthenticated;
 }
 
 - (IBAction)enterPassword:(id)sender {
+    DLog(@"enterPassword");
     NSString *password = [self selectedPassword];
     if (password) {
+        DLog(@"enterPassword: giving password to delegate");
         [_delegate iTermPasswordManagerEnterPassword:password];
+        DLog(@"enterPassword: closing sheet");
         [self closeOrEndSheet];
     }
 }
 
 - (void)closeOrEndSheet {
     if (self.window.isSheet) {
+        DLog(@"Ask parent to end sheet");
         [self.window.sheetParent endSheet:self.window];
     } else {
+        DLog(@"Close window");
         [self.window close];
     }
 }
@@ -383,11 +388,14 @@ static BOOL sAuthenticated;
 }
 
 - (NSString *)selectedPassword {
+    DLog(@"selectedPassowrd");
     if (!sAuthenticated) {
+        DLog(@"selectedPassowrd: return nil, not authenticated");
         return nil;
     }
     NSInteger index = [_tableView selectedRow];
     if (index < 0) {
+        DLog(@"selectedPassowrd: return nil, negative index");
         return nil;
     }
     NSError *error = nil;
@@ -395,8 +403,17 @@ static BOOL sAuthenticated;
                                                      account:_accounts[index]
                                                        error:&error];
     if (error) {
+        DLog(@"selectedPassowrd: return nil, keychain gave error %@", error);
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+            alert.messageText = [NSString stringWithFormat:@"Could not get password. Keychain query failed: %@", error];
+            [alert addButtonWithTitle:@"OK"];
+            [alert runModal];
+        });
         return nil;
     } else {
+        DLog(@"selectedPassowrd: return nonnil password");
         return password ?: @"";
     }
 }

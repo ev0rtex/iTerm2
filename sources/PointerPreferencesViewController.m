@@ -38,6 +38,7 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
 - (void)awakeFromNib {
     PreferenceInfo *info;
 
+    __weak __typeof(self) weakSelf = self;
     info = [self defineControl:_cmdSelection
                            key:kPreferenceKeyCmdClickOpensURLs
                           type:kPreferenceInfoTypeCheckbox];
@@ -58,7 +59,7 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
                            key:kPreferenceKeyThreeFingerEmulatesMiddle
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
-        [self postRefreshNotification];
+        [weakSelf postRefreshNotification];
         [[NSNotificationCenter defaultCenter] postNotificationName:kPointerPrefsChangedNotification
                                                             object:nil
                                                           userInfo:nil];

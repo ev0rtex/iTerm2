@@ -51,13 +51,13 @@
 
 - (void)writeToFolder:(NSURL *)folder {
     [_vertexBuffers enumerateKeysAndObjectsUsingBlock:^(NSNumber * _Nonnull key, id<MTLBuffer> _Nonnull obj, BOOL * _Nonnull stop) {
-        [_formatter writeVertexBuffer:obj index:key.integerValue toFolder:folder];
+        [self->_formatter writeVertexBuffer:obj index:key.integerValue toFolder:folder];
     }];
     [_fragmentBuffers enumerateKeysAndObjectsUsingBlock:^(NSNumber * _Nonnull key, id<MTLBuffer>  _Nonnull obj, BOOL * _Nonnull stop) {
-        [_formatter writeFragmentBuffer:obj index:key.integerValue toFolder:folder];
+        [self->_formatter writeFragmentBuffer:obj index:key.integerValue toFolder:folder];
     }];
     [_fragmentTextures enumerateKeysAndObjectsUsingBlock:^(NSNumber * _Nonnull key, id<MTLTexture>  _Nonnull obj, BOOL * _Nonnull stop) {
-        [_formatter writeFragmentTexture:obj index:key.integerValue toFolder:folder];
+        [self->_formatter writeFragmentTexture:obj index:key.integerValue toFolder:folder];
     }];
     NSString *description = [NSString stringWithFormat:@"vertex count: %@\ninstance count: %@\nrenderPipelineState: %@\n",
                              @(_vertexCount),
@@ -71,8 +71,10 @@
 @implementation iTermMetalDebugInfo {
     MTLRenderPassDescriptor *_renderPassDescriptor;
     MTLRenderPassDescriptor *_intermediateRenderPassDescriptor;
+    MTLRenderPassDescriptor *_temporaryRenderPassDescriptor;
     NSMutableArray<iTermMetalRowData *> *_rowData;
     NSMutableArray<iTermMetalRendererTransientState *> *_transientStates;
+    NSMutableArray<id<iTermMetalCellRenderer>> *_cellRenderers;
     NSMutableArray<iTermMetalDebugDrawInfo *> *_draws;
     NSImage *_finalImage;
 }
@@ -82,6 +84,7 @@
     if (self) {
         _rowData = [NSMutableArray array];
         _transientStates = [NSMutableArray array];
+        _cellRenderers = [NSMutableArray array];
         _draws = [NSMutableArray array];
     }
     return self;
@@ -95,6 +98,10 @@
     _intermediateRenderPassDescriptor = renderPassDescriptor;
 }
 
+- (void)setTemporaryRenderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor {
+    _temporaryRenderPassDescriptor = renderPassDescriptor;
+}
+
 - (void)addRowData:(iTermMetalRowData *)rowData {
     [_rowData addObject:rowData];
 }
@@ -102,6 +109,10 @@
 - (void)addTransientState:(iTermMetalRendererTransientState *)tState {
     [_transientStates addObject:tState];
     tState.debugInfo = self;
+}
+
+- (void)addCellRenderer:(id<iTermMetalCellRenderer>)renderer {
+    [_cellRenderers addObject:renderer];
 }
 
 - (void)addRenderOutputData:(NSData *)data
@@ -155,6 +166,11 @@
                                      to:[self newFolderNamed:@"IntermediateRenderPassDescriptor"
                                                         root:root]];
     }
+    if (_temporaryRenderPassDescriptor) {
+        [self writeRenderPassDescriptor:_temporaryRenderPassDescriptor
+                                     to:[self newFolderNamed:@"TemporaryRenderPassDescriptor"
+                                                        root:root]];
+    }
     NSURL *rowDataFolder = [self newFolderNamed:@"RowData" root:root];
     [_rowData enumerateObjectsUsingBlock:^(iTermMetalRowData * _Nonnull rowData, NSUInteger idx, BOOL * _Nonnull stop) {
         NSString *name = [NSString stringWithFormat:@"rowdata.%04d", (int)idx];
@@ -173,6 +189,16 @@
             NSString *filename = [NSString stringWithFormat:@"%04d-output.png", (int)obj.sequenceNumber];
             [obj.renderedOutputForDebugging saveAsPNGTo:[[folder URLByAppendingPathComponent:filename] path]];
         }
+    }];
+
+    [_cellRenderers enumerateObjectsUsingBlock:^(id<iTermMetalCellRenderer> _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (![obj respondsToSelector:@selector(writeDebugInfoToFolder:)]) {
+            return;
+        }
+        Class theClass = [obj class];
+        NSURL *folder = [self newFolderNamed:[NSString stringWithFormat:@"renderer-%04d-%@", (int)idx, NSStringFromClass(theClass)]
+                                        root:root];
+        [obj writeDebugInfoToFolder:folder];
     }];
 
     [_draws enumerateObjectsUsingBlock:^(iTermMetalDebugDrawInfo * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {

@@ -24,6 +24,7 @@
 #import "iTermPreferences.h"
 #import "iTermPrintAccessoryViewController.h"
 #import "iTermQuickLookController.h"
+#import "iTermScrollAccumulator.h"
 #import "iTermSelection.h"
 #import "iTermSelectionScrollHelper.h"
 #import "iTermShellHistoryController.h"
@@ -46,7 +47,9 @@
 #import "NSMutableAttributedString+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSPasteboard+iTerm.h"
+#import "NSSavePanel+iTerm.h"
 #import "NSResponder+iTerm.h"
+#import "NSSavePanel+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSURL+iTerm.h"
 #import "NSWindow+PSM.h"
@@ -79,19 +82,6 @@
 #import <WebKit/WebKit.h>
 
 static const int kMaxSelectedTextLengthForCustomActions = 400;
-
-// This defines the fraction of a character's width on its right side that is used to
-// select the NEXT character.
-//        |   A rightward drag beginning left of the bar selects G.
-//        <-> kCharWidthFractionOffset * charWidth
-//  <-------> Character width
-//   .-----.  .      :
-//  ;         :      :
-//  :         :      :
-//  :    ---- :------:
-//  '       : :      :
-//   `-----'  :      :
-static const double kCharWidthFractionOffset = 0.35;
 
 static const NSUInteger kDragPaneModifiers = (NSAlternateKeyMask | NSCommandKeyMask | NSShiftKeyMask);
 static const NSUInteger kRectangularSelectionModifiers = (NSCommandKeyMask | NSAlternateKeyMask);
@@ -256,6 +246,9 @@ static const int kDragThreshold = 3;
     NSEvent *_eventBeingHandled;
 
     NSMutableArray<iTermHighlightedRow *> *_highlightedRows;
+
+    // Used to report scroll wheel mouse events.
+    iTermScrollAccumulator *_scrollAccumulator;
 }
 
 
@@ -353,6 +346,8 @@ static const int kDragThreshold = 3;
         _altScreenMouseScrollInferer = [[iTermAltScreenMouseScrollInferer alloc] init];
         _altScreenMouseScrollInferer.delegate = self;
         [self refuseFirstResponderAtCurrentMouseLocation];
+
+        _scrollAccumulator = [[iTermScrollAccumulator alloc] init];
     }
     return self;
 }
@@ -424,6 +419,7 @@ static const int kDragThreshold = 3;
     [_keyBindingEmulator release];
     [_altScreenMouseScrollInferer release];
     [_highlightedRows release];
+    [_scrollAccumulator release];
 
     [super dealloc];
 }
@@ -1082,15 +1078,21 @@ static const int kDragThreshold = 3;
     return _primaryFont.underlineOffset;
 }
 
-- (iTermTextDrawingHelper *)drawingHelper {
+- (void)performBlockWithFlickerFixerGrid:(void (NS_NOESCAPE ^)(void))block {
     // Try to use a saved grid if one is available. If it succeeds, that implies that the cursor was
     // recently hidden and what we're drawing is how the screen looked just before the cursor was
     // hidden. Therefore, we'll temporarily show the cursor, but we'll need to restore cursorVisible's
     // value when we're done.
+    BOOL savedCursorVisible = _drawingHelper.cursorVisible;
     if ([_dataSource setUseSavedGridIfAvailable:YES]) {
         _drawingHelper.cursorVisible = YES;
     }
+    block();
+    [_dataSource setUseSavedGridIfAvailable:NO];
+    _drawingHelper.cursorVisible = savedCursorVisible;
+}
 
+- (iTermTextDrawingHelper *)drawingHelper {
     _drawingHelper.showStripes = (_showStripesWhenBroadcastingInput &&
                                   [_delegate textViewSessionIsBroadcastingInput]);
     _drawingHelper.cursorBlinking = [self isCursorBlinking];
@@ -1164,41 +1166,38 @@ static const int kDragThreshold = 3;
         ITCriticalError(_dataSource.width < 0, @"Negative datasource width of %@", @(_dataSource.width));
         return;
     }
-    BOOL savedCursorVisible = _drawingHelper.cursorVisible;
-
     DLog(@"drawing document visible rect %@", NSStringFromRect(self.enclosingScrollView.documentVisibleRect));
 
     const NSRect *rectArray;
     NSInteger rectCount;
     [self getRectsBeingDrawn:&rectArray count:&rectCount];
 
-    // Initialize drawing helper
-    [self drawingHelper];
+    [self performBlockWithFlickerFixerGrid:^{
+        // Initialize drawing helper
+        [self drawingHelper];
 
-    if (_drawingHook) {
-        // This is used by tests to customize the draw helper.
-        _drawingHook(_drawingHelper);
-    }
+        if (_drawingHook) {
+            // This is used by tests to customize the draw helper.
+            _drawingHook(_drawingHelper);
+        }
 
-    [_drawingHelper drawTextViewContentInRect:rect rectsPtr:rectArray rectCount:rectCount];
+        [_drawingHelper drawTextViewContentInRect:rect rectsPtr:rectArray rectCount:rectCount];
 
-    [_indicatorsHelper drawInFrame:_drawingHelper.indicatorFrame];
-    [_drawingHelper drawTimestamps];
+        [_indicatorsHelper drawInFrame:_drawingHelper.indicatorFrame];
+        [_drawingHelper drawTimestamps];
 
-    // Not sure why this is needed, but for some reason this view draws over its subviews.
-    for (NSView *subview in [self subviews]) {
-        [subview setNeedsDisplay:YES];
-    }
+        // Not sure why this is needed, but for some reason this view draws over its subviews.
+        for (NSView *subview in [self subviews]) {
+            [subview setNeedsDisplay:YES];
+        }
 
-    if (_drawingHelper.blinkingFound) {
-        // The user might have used the scroll wheel to cause blinking text to become
-        // visible. Make sure the timer is running if anything onscreen is
-        // blinking.
-        [self.delegate textViewWillNeedUpdateForBlink];
-    }
-
-    [_dataSource setUseSavedGridIfAvailable:NO];
-    _drawingHelper.cursorVisible = savedCursorVisible;
+        if (_drawingHelper.blinkingFound) {
+            // The user might have used the scroll wheel to cause blinking text to become
+            // visible. Make sure the timer is running if anything onscreen is
+            // blinking.
+            [self.delegate textViewWillNeedUpdateForBlink];
+        }
+    }];
 }
 
 - (BOOL)getAndResetDrawingAnimatedImageFlag {
@@ -1225,83 +1224,6 @@ static const int kDragThreshold = 3;
     NSRect rect = self.visibleRect;
     rect.size.width -= rightMargin;
     return rect;
-}
-
-- (NSString*)_getTextInWindowAroundX:(int)x
-                                   y:(int)y
-                            numLines:(int)numLines
-                        targetOffset:(int*)targetOffset
-                              coords:(NSMutableArray*)coords
-                    ignoringNewlines:(BOOL)ignoringNewlines
-{
-    const int width = [_dataSource width];
-    NSMutableString* joinedLines = [NSMutableString stringWithCapacity:numLines * width];
-
-    *targetOffset = -1;
-
-    // If rejectAtHardEol is true, then stop when you hit a hard EOL.
-    // If false, stop when you hit a hard EOL that has an unused cell before it,
-    // otherwise keep going.
-    BOOL rejectAtHardEol = !ignoringNewlines;
-    int xMin, xMax;
-    xMin = 0;
-    xMax = width;
-
-    // Any text preceding a hard line break on a line before |y| should not be considered.
-    int j = 0;
-    int firstLine = y - numLines;
-    for (int i = y - numLines; i < y; i++) {
-        if (i < 0 || i >= [_dataSource numberOfLines]) {
-            continue;
-        }
-        screen_char_t* theLine = [_dataSource getLineAtIndex:i];
-        if (i < y && theLine[width].code == EOL_HARD) {
-            if (rejectAtHardEol || theLine[width - 1].code == 0) {
-                firstLine = i + 1;
-            }
-        }
-    }
-
-    for (int i = firstLine; i <= y + numLines; i++) {
-        if (i < 0 || i >= [_dataSource numberOfLines]) {
-            continue;
-        }
-        screen_char_t* theLine = [_dataSource getLineAtIndex:i];
-        if (i < y && theLine[width].code == EOL_HARD) {
-            if (rejectAtHardEol || theLine[width - 1].code == 0) {
-                continue;
-            }
-        }
-        unichar* backingStore;
-        int* deltas;
-        NSString* string = ScreenCharArrayToString(theLine,
-                                                   xMin,
-                                                   MIN(EffectiveLineLength(theLine, width), xMax),
-                                                   &backingStore,
-                                                   &deltas);
-        int o = 0;
-        for (int k = 0; k < [string length]; k++) {
-            o = k + deltas[k];
-            if (*targetOffset == -1 && i == y && o >= x) {
-                *targetOffset = k + [joinedLines length];
-            }
-            [coords addObject:[NSValue valueWithGridCoord:VT100GridCoordMake(o, i)]];
-        }
-        [joinedLines appendString:string];
-        free(deltas);
-        free(backingStore);
-
-        j++;
-        o++;
-        if (i >= y && theLine[width].code == EOL_HARD) {
-            if (rejectAtHardEol || theLine[width - 1].code == 0) {
-                [coords addObject:[NSValue valueWithGridCoord:VT100GridCoordMake(o, i)]];
-                break;
-            }
-        }
-    }
-    // TODO: What if it's multiple lines ending in a soft eol and the selection goes to the end?
-    return joinedLines;
 }
 
 - (SmartMatch *)smartSelectAtX:(int)x
@@ -1387,7 +1309,6 @@ static const int kDragThreshold = 3;
 // * "special" keys, like Enter which go through doCommandBySelector
 // * Repeated special keys
 - (void)keyDown:(NSEvent *)event {
-    event = [event eventByChangingYenToBackslash];
     [_altScreenMouseScrollInferer keyDown:event];
     if (![_delegate textViewShouldAcceptKeyDownEvent:event]) {
         return;
@@ -1776,7 +1697,8 @@ static const int kDragThreshold = 3;
         changed = [self setCursor:[NSCursor openHandCursor]];
     } else if (([event modifierFlags] & kRectangularSelectionModifierMask) == kRectangularSelectionModifiers) {
         changed = [self setCursor:[NSCursor crosshairCursor]];
-    } else if (([event modifierFlags] & (NSAlternateKeyMask | NSCommandKeyMask)) == NSCommandKeyMask) {
+    } else if (action &&
+               ([event modifierFlags] & (NSAlternateKeyMask | NSCommandKeyMask)) == NSCommandKeyMask) {
         changed = [self setCursor:[NSCursor pointingHandCursor]];
         if (action.hover && action.string.length) {
             hover = action.string;
@@ -1835,7 +1757,9 @@ static const int kDragThreshold = 3;
                                               y:y
                          respectingHardNewlines:![iTermAdvancedSettingsModel ignoreHardNewlinesInURLs]];
             if (action) {
-                _drawingHelper.underlinedRange = VT100GridAbsWindowedRangeFromRelative(action.range, [_dataSource totalScrollbackOverflow]);
+                if ([iTermAdvancedSettingsModel enableUnderlineSemanticHistoryOnCmdHover]) {
+                    _drawingHelper.underlinedRange = VT100GridAbsWindowedRangeFromRelative(action.range, [_dataSource totalScrollbackOverflow]);
+                }
 
                 if (action.actionType == kURLActionOpenURL) {
                     NSURL *url = [NSURL URLWithUserSuppliedString:action.string];
@@ -1996,7 +1920,7 @@ static const int kDragThreshold = 3;
     int x, y;
     int width = [_dataSource width];
 
-    x = (locationInTextView.x - [iTermAdvancedSettingsModel terminalMargin] + _charWidth * kCharWidthFractionOffset) / _charWidth;
+    x = (locationInTextView.x - [iTermAdvancedSettingsModel terminalMargin] + _charWidth * [iTermAdvancedSettingsModel fractionOfCharacterSelectingNextNeighbor]) / _charWidth;
     if (x < 0) {
         x = 0;
     }
@@ -2625,8 +2549,11 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                                     continuationChars:nil
                                                   convertNullsToSpace:YES
                                                                coords:nil];
-                if (![self openSemanticHistoryPath:action.string
+                if (![self openSemanticHistoryPath:action.fullPath
+                                     orRawFilename:action.rawFilename
                                   workingDirectory:action.workingDirectory
+                                        lineNumber:action.lineNumber
+                                      columnNumber:action.columnNumber
                                             prefix:extendedPrefix
                                             suffix:extendedSuffix]) {
                     [self findUrlInString:action.string andOpenInBackground:openInBackground];
@@ -2674,7 +2601,10 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 }
 
 - (BOOL)openSemanticHistoryPath:(NSString *)path
+                  orRawFilename:(NSString *)rawFileName
                workingDirectory:(NSString *)workingDirectory
+                     lineNumber:(NSString *)lineNumber
+                   columnNumber:(NSString *)columnNumber
                          prefix:(NSString *)prefix
                          suffix:(NSString *)suffix {
     NSDictionary *subs = [self semanticHistorySubstitutionsWithPrefix:prefix
@@ -2682,8 +2612,10 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                                                  path:path
                                                      workingDirectory:workingDirectory];
     return [self.semanticHistoryController openPath:path
-                                   workingDirectory:workingDirectory
-                                      substitutions:subs];
+                                      orRawFilename:rawFileName
+                                      substitutions:subs
+                                         lineNumber:lineNumber
+                                       columnNumber:columnNumber];
 }
 
 - (NSDictionary *)semanticHistorySubstitutionsWithPrefix:(NSString *)prefix
@@ -4474,8 +4406,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     NSSavePanel* panel = [NSSavePanel savePanel];
 
     NSString *directory = [[NSFileManager defaultManager] downloadsDirectory] ?: NSHomeDirectory();
-
-    panel.directoryURL = [NSURL fileURLWithPath:directory];
+    [panel setDirectoryURL:[NSURL fileURLWithPath:directory] onceForID:@"saveImageAs"];
     panel.nameFieldStringValue = [imageInfo.filename lastPathComponent];
     panel.allowedFileTypes = @[ @"png", @"bmp", @"gif", @"jp2", @"jpeg", @"jpg", @"tiff" ];
     panel.allowsOtherFileTypes = NO;
@@ -4483,7 +4414,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     [panel setExtensionHidden:NO];
 
     if ([panel runModal] == NSModalResponseOK) {
-        NSString *filename = [panel legacyFilename];
+        NSString *filename = [[panel URL] path];
         [imageInfo saveToFile:filename];
     }
 }
@@ -5054,23 +4985,18 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 }
 
 // Save method
-- (void)saveDocumentAs:(id)sender
-{
-    NSData *aData;
-    NSSavePanel *aSavePanel;
-    NSString *aString;
-
+- (void)saveDocumentAs:(id)sender {
     // We get our content of the textview or selection, if any
-    aString = [self selectedText];
+    NSString *aString = [self selectedText];
     if (!aString) {
         aString = [self content];
     }
 
-    aData = [aString dataUsingEncoding:[_delegate textViewEncoding]
-                  allowLossyConversion:YES];
+    NSData *aData = [aString dataUsingEncoding:[_delegate textViewEncoding]
+                          allowLossyConversion:YES];
 
     // initialize a save panel
-    aSavePanel = [NSSavePanel savePanel];
+    NSSavePanel *aSavePanel = [NSSavePanel savePanel];
     [aSavePanel setAccessoryView:nil];
 
     NSString *path = @"";
@@ -5088,8 +5014,12 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     formattedDate = [formattedDate stringByReplacingOccurrencesOfString:@":" withString:@"-"];
     NSString *nowStr = [NSString stringWithFormat:@"Log at %@.txt", formattedDate];
 
-    if ([aSavePanel legacyRunModalForDirectory:path file:nowStr] == NSFileHandlingPanelOKButton) {
-        if (![aData writeToFile:[aSavePanel legacyFilename] atomically:YES]) {
+    // Show the save panel. The first time it's done set the path, and from then on the save panel
+    // will remember the last path you used.tmp
+    [aSavePanel setDirectoryURL:[NSURL fileURLWithPath:path] onceForID:@"saveDocumentAs:"];
+    aSavePanel.nameFieldStringValue = nowStr;
+    if ([aSavePanel runModal] == NSFileHandlingPanelOKButton) {
+        if (![aData writeToFile:aSavePanel.URL.path atomically:YES]) {
             NSBeep();
         }
     }
@@ -5224,6 +5154,10 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
         [gCurrentKeyEventTextView insertText:aString];
         return;
     }
+
+    // See issue 6699
+    aString = [aString stringByReplacingOccurrencesOfString:@"¥" withString:@"\\"];
+
     DLog(@"PTYTextView insertText:%@", aString);
     if ([self hasMarkedText]) {
         DLog(@"insertText: clear marked text");
@@ -6913,6 +6847,9 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
     if ((event.type == NSLeftMouseDown || event.type == NSLeftMouseUp) && _mouseDownWasFirstMouse) {
         return NO;
     }
+    if ((event.type == NSLeftMouseDown || event.type == NSLeftMouseUp) && self.window.firstResponder != self) {
+        return NO;
+    }
     if (event.type == NSScrollWheel) {
         return ([self xtermMouseReporting] && [self xtermMouseReportingAllowMouseWheel]);
     } else {
@@ -6939,7 +6876,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
             return MOUSE_BUTTON_MIDDLE;
 
         case NSScrollWheel:
-            if ([event deltaY] > 0) {
+            if ([event scrollingDeltaY] > 0) {
                 return MOUSE_BUTTON_SCROLLDOWN;
             } else {
                 return MOUSE_BUTTON_SCROLLUP;
@@ -6968,7 +6905,7 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
                                      modifiers:event.modifierFlags
                                         button:[self mouseReportingButtonNumberForEvent:event]
                                     coordinate:coord
-                                        deltaY:[event deltaY]];
+                                        deltaY:[_scrollAccumulator deltaYForEvent:event lineHeight:self.enclosingScrollView.verticalLineScroll]];
 }
 
 #pragma mark - NSDraggingSource
@@ -7164,53 +7101,92 @@ static double EuclideanDistance(NSPoint p1, NSPoint p2) {
 
 #pragma mark - Accessibility
 
-- (BOOL)accessibilityIsIgnored {
-    return NO;
+- (BOOL)isAccessibilityElement {
+    return YES;
 }
 
-- (NSArray *)accessibilityAttributeNames {
-    return [_accessibilityHelper accessibilityAttributeNames];
+- (NSInteger)accessibilityLineForIndex:(NSInteger)index {
+    return [_accessibilityHelper lineForIndex:index];
 }
 
-- (NSArray *)accessibilityParameterizedAttributeNames {
-    return [_accessibilityHelper accessibilityParameterizedAttributeNames];
+- (NSRange)accessibilityRangeForLine:(NSInteger)line {
+    return [_accessibilityHelper rangeForLine:line];
 }
 
-- (id)accessibilityAttributeValue:(NSString *)attribute forParameter:(id)parameter {
-    BOOL handled;
-    id result = [_accessibilityHelper accessibilityAttributeValue:attribute
-                                                     forParameter:parameter
-                                                          handled:&handled];
-    if (!handled) {
-        result = [super accessibilityAttributeValue:attribute forParameter:parameter];
-    }
-    return result;
+- (NSString *)accessibilityStringForRange:(NSRange)range {
+    return [_accessibilityHelper stringForRange:range];
 }
 
-- (BOOL)accessibilityIsAttributeSettable:(NSString *)attribute {
-    BOOL handled;
-    BOOL result = [_accessibilityHelper accessibilityIsAttributeSettable:attribute handled:&handled];
-    if (!handled) {
-        result = [super accessibilityIsAttributeSettable:attribute];
-    }
-    return result;
+- (NSRange)accessibilityRangeForPosition:(NSPoint)point {
+    return [_accessibilityHelper rangeForPosition:point];
 }
 
-- (void)accessibilitySetValue:(id)value forAttribute:(NSString *)attribute {
-    BOOL handled;
-    [_accessibilityHelper accessibilitySetValue:value forAttribute:attribute handled:&handled];
-    if (!handled) {
-        [super accessibilitySetValue:value forAttribute:attribute];
-    }
+- (NSRange)accessibilityRangeForIndex:(NSInteger)index {
+    return [_accessibilityHelper rangeOfIndex:index];
 }
 
-- (id)accessibilityAttributeValue:(NSString *)attribute {
-    BOOL handled;
-    id result = [_accessibilityHelper accessibilityAttributeValue:attribute handled:&handled];
-    if (!handled) {
-        result = [super accessibilityAttributeValue:attribute];
-    }
-    return result;
+- (NSRect)accessibilityFrameForRange:(NSRange)range {
+    return [_accessibilityHelper boundsForRange:range];
+}
+
+- (NSAttributedString *)accessibilityAttributedStringForRange:(NSRange)range {
+    return [_accessibilityHelper attributedStringForRange:range];
+}
+
+- (NSAccessibilityRole)accessibilityRole {
+    return [_accessibilityHelper role];
+}
+
+- (NSString *)accessibilityRoleDescription {
+    return [_accessibilityHelper roleDescription];
+}
+
+- (NSString *)accessibilityHelp {
+    return [_accessibilityHelper help];
+}
+
+- (BOOL)isAccessibilityFocused {
+    return [_accessibilityHelper focused];
+}
+
+- (NSString *)accessibilityLabel {
+    return [_accessibilityHelper label];
+}
+
+- (id)accessibilityValue {
+    return [_accessibilityHelper allText];
+}
+
+- (NSInteger)accessibilityNumberOfCharacters {
+    return [_accessibilityHelper numberOfCharacters];
+}
+
+- (NSString *)accessibilitySelectedText {
+    return [_accessibilityHelper selectedText];
+}
+
+- (NSRange)accessibilitySelectedTextRange {
+    return [_accessibilityHelper selectedTextRange];
+}
+
+- (NSArray<NSValue *> *)accessibilitySelectedTextRanges {
+    return [_accessibilityHelper selectedTextRanges];
+}
+
+- (NSInteger)accessibilityInsertionPointLineNumber {
+    return [_accessibilityHelper insertionPointLineNumber];
+}
+
+- (NSRange)accessibilityVisibleCharacterRange {
+    return [_accessibilityHelper visibleCharacterRange];
+}
+
+- (NSString *)accessibilityDocument {
+    return [[_accessibilityHelper currentDocumentURL] absoluteString];
+}
+
+- (void)setAccessibilitySelectedTextRange:(NSRange)accessibilitySelectedTextRange {
+    [_accessibilityHelper setSelectedTextRange:accessibilitySelectedTextRange];
 }
 
 #pragma mark - Accessibility Helper Delegate

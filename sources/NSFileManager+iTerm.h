@@ -25,9 +25,13 @@
 
 @interface NSFileManager (iTerm)
 
+- (NSString *)legacyApplicationSupportDirectory;
 - (NSString *)applicationSupportDirectory;
 
-- (NSString *)legacyApplicationSupportDirectory;
+// Gives a symlink called ApplicationSupport because shebangs can't handle spaces and this breaks pyenv.
+// Creates the symlink if it doesn't already exist
+- (NSString *)applicationSupportDirectoryWithoutSpaces;
+- (NSString *)applicationSupportDirectoryWithoutSpacesWithoutCreatingSymlink;
 
 - (NSString *)temporaryDirectory;
 
@@ -51,12 +55,17 @@
 
 // Directory where scripts live. These are loaded and added to a menu or auto-run at startup.
 - (NSString *)scriptsPath;
+- (NSString *)scriptsPathWithoutSpaces;
 
 // Path to special auto-launch script that is run at startup.
-- (NSString *)autolaunchScriptPath;
+- (NSString *)legacyAutolaunchScriptPath;  // applescript
+- (NSString *)autolaunchScriptPath;  // scripting API
 
 // Path to special file that, if it exists at launch time, suppresses autolaunch script and
 // window restoration.
 - (NSString *)quietFilePath;
+- (BOOL)directoryEmpty:(NSString *)path;
+- (BOOL)itemIsSymlink:(NSString *)path;
+- (BOOL)itemIsDirectory:(NSString *)path;
 
 @end

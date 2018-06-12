@@ -109,9 +109,14 @@ NSString *const kPreferencePanelWillCloseNotification = @"kPreferencePanelWillCl
 static PreferencePanel *gSharedPreferencePanel;
 static PreferencePanel *gSessionsPreferencePanel;
 
+@implementation iTermPrefsPanel
+
+@end
+
 @interface PreferencePanel() <NSTabViewDelegate>
 
 @end
+
 @implementation PreferencePanel {
     ProfileModel *_profileModel;
     BOOL _editCurrentSessionMode;
@@ -298,18 +303,14 @@ static PreferencePanel *gSessionsPreferencePanel;
 
 - (void)windowWillClose:(NSNotification *)aNotification {
     [self.window saveFrameUsingName:self.nameForFrame];
-
-    [[self retain] autorelease];
-
+    __typeof(self) strongSelf = self;
     if (self == gSharedPreferencePanel) {
-        [gSharedPreferencePanel autorelease];
         gSharedPreferencePanel = nil;
     } else if (self == gSessionsPreferencePanel) {
-        [gSessionsPreferencePanel autorelease];
         gSessionsPreferencePanel = nil;
     }
 
-    [self postWillCloseNotification];
+    [strongSelf postWillCloseNotification];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
@@ -382,6 +383,9 @@ static PreferencePanel *gSessionsPreferencePanel;
 }
 
 - (NSArray *)orderedToolbarIdentifiers {
+    if (!_globalToolbarItem) {
+        return @[];
+    }
     return @[ [_globalToolbarItem itemIdentifier],
               [_appearanceToolbarItem itemIdentifier],
               [_bookmarksToolbarItem itemIdentifier],
@@ -392,6 +396,9 @@ static PreferencePanel *gSessionsPreferencePanel;
 }
 
 - (NSDictionary *)toolbarIdentifierToItemDictionary {
+    if (!_globalToolbarItem) {
+        return @{};
+    }
     return @{ [_globalToolbarItem itemIdentifier]: _globalToolbarItem,
               [_appearanceToolbarItem itemIdentifier]: _appearanceToolbarItem,
               [_bookmarksToolbarItem itemIdentifier]: _bookmarksToolbarItem,

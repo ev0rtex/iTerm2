@@ -283,6 +283,10 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 // symbols (non-alphanumerics) get to use the fastpath.
 @property (nonatomic, readonly) BOOL asciiLigaturesAvailable;
 
+@property (nonatomic, readonly, class) NSColor *successMarkColor;
+@property (nonatomic, readonly, class) NSColor *errorMarkColor;
+@property (nonatomic, readonly, class) NSColor *otherMarkColor;
+
 // imageSize: size of image to draw
 // destinationRect: rect bounding the region of a scrollview's content view (i.e., very tall view) that's being drawn
 // destinationFrameSize: size of the scrollview's content view
@@ -301,6 +305,11 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
                                 wantBackground:(BOOL)wantBackgroundColor
                                   reverseVideo:(BOOL)reverseVideo;
 
++ (NSRect)frameForMarkContainedInRect:(NSRect)container
+                             cellSize:(CGSize)cellSize
+               cellSizeWithoutSpacing:(CGSize)cellSizeWithoutSpacing
+                                scale:(CGFloat)scale;
+
 // Updates self.blinkingFound.
 - (void)drawTextViewContentInRect:(NSRect)rect
                          rectsPtr:(const NSRect *)rectArray
@@ -316,7 +325,7 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 
 - (VT100GridCoordRange)coordRangeForRect:(NSRect)rect;
 
-- (CGFloat)yOriginForUnderlineGivenFontXHeight:(CGFloat)xHeight yOffset:(CGFloat)yOffset;
+- (CGFloat)yOriginForUnderlineForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight;
 - (CGFloat)underlineThicknessForFont:(NSFont *)font;
 - (NSRange)underlinedRangeOnLine:(long long)row;
 
@@ -329,13 +338,16 @@ NS_INLINE BOOL iTermTextDrawingHelperIsCharacterDrawable(screen_char_t *c,
                                                          BOOL blinkingItemsVisible,
                                                          BOOL blinkAllowed) {
     const unichar code = c->code;
+    if (c->image) {
+        return YES;
+    }
     if (!c->complexChar) {
         if (code == DWC_RIGHT ||
             code == DWC_SKIP ||
             code == TAB_FILLER ||
             code < ' ') {
             return NO;
-        } else if (code == ' ' && !c->underline) {
+        } else if (code == ' ' && !c->underline && !c->urlCode) {
             return NO;
         }
     }

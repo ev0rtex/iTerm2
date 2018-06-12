@@ -8,6 +8,7 @@
 
 #import "iTermAPIServer.h"
 
+#import "Api.pbobjc.h"
 #import "DebugLogging.h"
 #import "iTermHTTPConnection.h"
 #import "iTermLSOF.h"
@@ -16,13 +17,28 @@
 #import "iTermSocket.h"
 #import "iTermIPV4Address.h"
 #import "iTermSocketIPV4Address.h"
-#import "Api.pbobjc.h"
+#import "NSArray+iTerm.h"
 #import <objc/runtime.h>
 
 #import <Cocoa/Cocoa.h>
 
-NSString *const iTermWebSocketConnectionPeerIdentityBundleIdentifier = @"bundle id";
+NSString *const iTermAPIServerDidReceiveMessage = @"iTermAPIServerDidReceiveMessage";
+NSString *const iTermAPIServerWillSendMessage = @"iTermAPIServerWillSendMessage";
+NSString *const iTermAPIServerConnectionRejected = @"iTermAPIServerConnectionRejected";
+NSString *const iTermAPIServerConnectionAccepted = @"iTermAPIServerConnectionAccepted";
+NSString *const iTermAPIServerConnectionClosed = @"iTermAPIServerConnectionClosed";
 
+// State shared between main thread and execution thread for a
+// mainthread-blocking iTerm2-to-script RPC.
+@interface iTermBlockingRPC : NSObject
+@property (atomic, strong) dispatch_group_t group;
+@property (atomic, strong) NSString *rpcID;
+@property (atomic, strong) NSError *error;
+@property (atomic, strong) ITMServerOriginatedRPCResultRequest *result;
+@end
+
+@implementation iTermBlockingRPC
+@end
 
 @interface iTermWebSocketConnection(Handle)
 @property(nonatomic, readonly) id handle;
@@ -50,7 +66,7 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
 
 @interface iTermAPIRequest : NSObject
 @property (nonatomic, weak) iTermWebSocketConnection *connection;
-@property (nonatomic) ITMRequest *request;
+@property (nonatomic) ITMClientOriginatedMessage *request;
 @end
 
 @implementation iTermAPIRequest
@@ -124,12 +140,13 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
 
 @interface iTermAPIServer()
 @property (atomic) iTermAPITransaction *transaction;
+@property (nonatomic, strong) dispatch_queue_t queue;
+@property (atomic, strong) iTermBlockingRPC *blockingRPC;  // _executionQueue
 @end
 
 @implementation iTermAPIServer {
     iTermSocket *_socket;
-    NSMutableDictionary<id, iTermWebSocketConnection *> *_connections;
-    dispatch_queue_t _queue;
+    NSMutableDictionary<id, iTermWebSocketConnection *> *_connections;  // _queue
     dispatch_queue_t _executionQueue;
 }
 
@@ -177,20 +194,60 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
 
 - (void)postAPINotification:(ITMNotification *)notification toConnection:(id)connection {
     dispatch_async(_queue, ^{
-        iTermWebSocketConnection *webSocketConnection = _connections[connection];
+        iTermWebSocketConnection *webSocketConnection = self->_connections[connection];
         if (webSocketConnection) {
-            ITMResponse *response = [[ITMResponse alloc] init];
+            ITMServerOriginatedMessage *response = [[ITMServerOriginatedMessage alloc] init];
             response.notification = notification;
-            dispatch_async(_executionQueue, ^{
+            dispatch_async(self->_executionQueue, ^{
                 [self sendResponse:response onConnection:webSocketConnection];
             });
         }
     });
 }
 
+- (ITMServerOriginatedRPCResultRequest *)sendAndWaitForSynchronousRPC:(ITMNotification *)notification
+                                                         toConnection:(id)connection
+                                                              timeout:(NSTimeInterval)timeoutSeconds
+                                                                error:(out NSError **)error {
+    assert([NSThread isMainThread]);
+
+    iTermBlockingRPC *blockingRPC = [[iTermBlockingRPC alloc] init];
+    blockingRPC.rpcID = notification.serverOriginatedRpcNotification.requestId;
+    blockingRPC.group = dispatch_group_create();
+    dispatch_group_enter(blockingRPC.group);
+    dispatch_async(_executionQueue, ^{
+        self.blockingRPC = blockingRPC;
+    });
+    [self postAPINotification:notification toConnection:connection];
+
+    // Block the main thread!
+    long timedOut = dispatch_group_wait(blockingRPC.group, dispatch_time(DISPATCH_TIME_NOW, timeoutSeconds * NSEC_PER_SEC));
+
+    dispatch_async(_executionQueue, ^{
+        self.blockingRPC = nil;
+    });
+
+    if (timedOut) {
+        *error = [NSError errorWithDomain:@"com.iterm2.api"
+                                     code:1
+                                 userInfo:@{ NSLocalizedDescriptionKey: @"Timeout" }];
+        return nil;
+    } else if (!blockingRPC.result) {
+        *error = [NSError errorWithDomain:@"com.iterm2.api"
+                                     code:3
+                                 userInfo:@{ NSLocalizedDescriptionKey: @"Unknown error" }];
+        return nil;
+    } else if (blockingRPC.error) {
+        *error = blockingRPC.error;
+        return nil;
+    } else {
+        return blockingRPC.result;
+    }
+}
+
+
 - (void)didAcceptConnectionOnFileDescriptor:(int)fd fromAddress:(iTermSocketAddress *)address {
     DLog(@"Accepted connection");
-    __weak __typeof(self) weakSelf = self;
     dispatch_queue_t queue = _queue;
     dispatch_async(queue, ^{
         iTermHTTPConnection *connection = [[iTermHTTPConnection alloc] initWithFileDescriptor:fd clientAddress:address];
@@ -198,64 +255,141 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
         pid_t pid = [iTermLSOF processIDWithConnectionFromAddress:address];
         if (pid == -1) {
             XLog(@"Reject connection from unidentifiable process with address %@", address);
-            [connection unauthorized];
+            dispatch_async(connection.queue, ^{
+                [connection unauthorized];
+            });
             return;
         }
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSDictionary *identity = [weakSelf.delegate apiServerAuthorizeProcess:pid];
-            if (identity) {
-                dispatch_async(queue, ^{ [weakSelf startRequestOnConnection:connection identity:identity]; });
-            } else {
-                XLog(@"Reject unauthenticated process (pid %d)", pid);
-                [connection unauthorized];
-                return;
+        [self startRequestOnConnection:connection pid:pid completion:^(BOOL ok, NSString *reason) {
+            if (!ok) {
+                XLog(@"Reject unauthenticated process (pid %d): %@", pid, reason);
+                dispatch_async(connection.queue, ^{
+                    [connection unauthorized];
+                });
             }
+        }];
+    });
+}
+
+// _queue
+- (void)startRequestOnConnection:(iTermHTTPConnection *)connection pid:(int)pid completion:(void (^)(BOOL, NSString *))completion {
+    dispatch_async(connection.queue, ^{
+        NSURLRequest *request = [connection readRequest];
+        dispatch_async(self->_queue, ^{
+            [self reallyStartRequestOnConnection:connection pid:pid request:request completion:completion];
         });
     });
 }
 
-- (void)startRequestOnConnection:(iTermHTTPConnection *)connection identity:(NSDictionary *)identity {
-    NSURLRequest *request = [connection readRequest];
+// queue
+// completion called on queue
+- (void)reallyStartRequestOnConnection:(iTermHTTPConnection *)connection
+                                   pid:(int)pid
+                               request:(NSURLRequest *)request
+                            completion:(void (^)(BOOL, NSString *))completion {
     if (!request) {
-        XLog(@"Failed to read request from HTTP connection");
-        [connection badRequest];
+        dispatch_async(connection.queue, ^{
+            [connection badRequest];
+        });
+        completion(NO, @"Failed to read request from HTTP connection");
         return;
     }
     if (![request.URL.path isEqualToString:@"/"]) {
-        XLog(@"Path %@ not known", request.URL.path);
-        [connection badRequest];
+        dispatch_async(connection.queue, ^{
+            [connection badRequest];
+        });
+        completion(NO, [NSString stringWithFormat:@"Path %@ not known", request.URL.path]);
         return;
     }
-    if ([iTermWebSocketConnection validateRequest:request]) {
-        DLog(@"Upgrading request to websocket");
-        iTermWebSocketConnection *webSocketConnection = [[iTermWebSocketConnection alloc] initWithConnection:connection];
-        webSocketConnection.peerIdentity = identity;
-        webSocketConnection.delegate = self;
-        _connections[webSocketConnection.handle] = webSocketConnection;
-        [webSocketConnection handleRequest:request];
+    NSString *authReason = nil;
+    iTermWebSocketConnection *webSocketConnection = [iTermWebSocketConnection newWebSocketConnectionForRequest:request
+                                                                                                    connection:connection
+                                                                                                        reason:&authReason];
+    if (webSocketConnection) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *reason = nil;
+            NSString *displayName = nil;
+            NSDictionary *identity = [self.delegate apiServerAuthorizeProcess:pid
+                                                                preauthorized:webSocketConnection.preauthorized
+                                                                       reason:&reason
+                                                                  displayName:&displayName];
+            if (identity) {
+                [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionAccepted
+                                                                    object:webSocketConnection.key
+                                                                  userInfo:@{ @"reason": reason ?: [NSNull null],
+                                                                              @"job": displayName ?: [NSNull null],
+                                                                              @"pid": @(pid),
+                                                                              @"websocket": webSocketConnection }];
+                dispatch_async(self->_queue, ^{
+                    DLog(@"Upgrading request to websocket");
+                    webSocketConnection.displayName = displayName;
+                    webSocketConnection.peerIdentity = identity;
+                    webSocketConnection.delegate = self;
+                    webSocketConnection.delegateQueue = self->_queue;
+                    self->_connections[webSocketConnection.handle] = webSocketConnection;
+                    [webSocketConnection handleRequest:request completion:^{
+                        dispatch_async(self->_queue, ^{
+                            completion(YES, nil);
+                        });
+                    }];
+                });
+            } else {
+                [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionRejected
+                                                                    object:request.allHTTPHeaderFields[@"x-iterm2-key"]
+                                                                  userInfo:@{ @"reason": reason ?: @"Unknown reason",
+                                                                              @"job": displayName ?: [NSNull null],
+                                                                              @"pid": @(pid) }];
+                dispatch_async(connection.queue, ^{
+                    [connection unauthorized];
+                });
+                dispatch_async(self->_queue, ^{
+                    completion(NO, reason);
+                });
+            }
+        });
     } else {
-        XLog(@"Bad request %@", request);
-        [connection badRequest];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionRejected
+                                                                object:request.allHTTPHeaderFields[@"x-iterm2-key"]
+                                                              userInfo:@{ @"reason": authReason ?: @"Unknown reason",
+                                                                          @"pid": @(pid) }];
+        });
+        dispatch_async(connection.queue, ^{
+            [connection badRequest];
+        });
+        completion(NO, authReason);
     }
 }
 
-- (void)sendResponse:(ITMResponse *)response onConnection:(iTermWebSocketConnection *)webSocketConnection {
+// queue
+- (void)sendResponse:(ITMServerOriginatedMessage *)response onConnection:(iTermWebSocketConnection *)webSocketConnection {
     DLog(@"Sending response %@", response);
-    [webSocketConnection sendBinary:[response data]];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerWillSendMessage
+                                                            object:webSocketConnection.key
+                                                          userInfo:@{ @"message": response }];
+    });
+    [webSocketConnection sendBinary:[response data] completion:nil];
 }
 
+#pragma mark - Transactions
+
 // Runs on execution queue
-- (void)dispatchRequestWhileNotInTransaction:(ITMRequest *)request
+- (void)dispatchRequestWhileNotInTransaction:(ITMClientOriginatedMessage *)request
                                   connection:(iTermWebSocketConnection *)webSocketConnection {
     NSAssert(!self.transaction, @"Already in a transaction");
 
     __weak __typeof(self) weakSelf = self;
-    if (request.hasTransactionRequest) {
+    if (request.submessageOneOfCase == ITMClientOriginatedMessage_Submessage_OneOfCase_TransactionRequest) {
+        ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerDidReceiveMessage
+                                                                object:webSocketConnection.key
+                                                              userInfo:@{ @"request": request }];
+        });
         if (!request.transactionRequest.begin) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                ITMResponse *response = [[ITMResponse alloc] init];
-                response.id_p = request.id_p;
                 response.transactionResponse = [[ITMTransactionResponse alloc] init];
                 response.transactionResponse.status = ITMTransactionResponse_Status_NoTransaction;
                 [weakSelf sendResponse:response onConnection:webSocketConnection];
@@ -267,13 +401,14 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
         transaction.connection = webSocketConnection;
         self.transaction = transaction;
 
+        // Enter the main queue before sending the transaction response. This guarantees the main
+        // thread doesn't do anything after that response is sent.
         dispatch_async(dispatch_get_main_queue(), ^{
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.transactionResponse = [[ITMTransactionResponse alloc] init];
-            response.transactionResponse.status = ITMTransactionResponse_Status_Ok;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-
+            dispatch_async(self->_queue, ^{
+                response.transactionResponse = [[ITMTransactionResponse alloc] init];
+                response.transactionResponse.status = ITMTransactionResponse_Status_Ok;
+                [weakSelf sendResponse:response onConnection:webSocketConnection];
+            });
             [weakSelf drainTransaction:transaction];
         });
     } else {
@@ -293,14 +428,18 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
         }
         iTermAPIRequest *transactionRequest = [transaction dequeueRequestFromAnyConnection:NO];
 
-        if (transactionRequest.request.hasTransactionRequest &&
+        if (transactionRequest.request.submessageOneOfCase == ITMClientOriginatedMessage_Submessage_OneOfCase_TransactionRequest &&
             !transactionRequest.request.transactionRequest.begin) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerDidReceiveMessage
+                                                                object:transactionRequest.connection.key
+                                                              userInfo:@{ @"request": transactionRequest.request }];
             // End the transaction by request.
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = transactionRequest.request.id_p;
+            ITMServerOriginatedMessage *response = [self newResponseForRequest:transactionRequest.request];
             response.transactionResponse = [[ITMTransactionResponse alloc] init];
             response.transactionResponse.status = ITMTransactionResponse_Status_Ok;
-            [self sendResponse:response onConnection:transactionRequest.connection];
+            dispatch_async(_queue, ^{
+                [self sendResponse:response onConnection:transactionRequest.connection];
+            });
             break;
         }
 
@@ -321,107 +460,398 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
     });
 }
 
-// Runs on main queue, either in or not in a transaction.
-- (void)dispatchRequest:(ITMRequest *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+#pragma mark - Handle incoming RPCs
+
+- (void)finishHandlingRequestWithResponse:(ITMServerOriginatedMessage *)response
+                             onConnection:(iTermWebSocketConnection *)webSocketConnection {
+    dispatch_async(self.queue, ^{
+        [self sendResponse:response onConnection:webSocketConnection];
+    });
+}
+
+- (ITMServerOriginatedMessage *)newResponseForRequest:(ITMClientOriginatedMessage *)request {
+    ITMServerOriginatedMessage *response = [[ITMServerOriginatedMessage alloc] init];
+    response.id_p = request.id_p;
+    return response;
+}
+
+- (void)handleTransactionRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+    response.transactionResponse = [[ITMTransactionResponse alloc] init];
+    response.transactionResponse.status = ITMTransactionResponse_Status_AlreadyInTransaction;
+    [self finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+}
+
+- (void)handleGetBufferRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
     __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerGetBuffer:request.getBufferRequest
+                          handler:^(ITMGetBufferResponse *getBufferResponse) {
+                              response.getBufferResponse = getBufferResponse;
+                              [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                          }];
+}
+
+- (void)handleGetPromptRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerGetPrompt:request.getPromptRequest handler:^(ITMGetPromptResponse *getPromptResponse) {
+        response.getPromptResponse = getPromptResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleNotificationRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerNotification:request.notificationRequest
+                          connection:webSocketConnection.handle
+                             handler:^(ITMNotificationResponse *notificationResponse) {
+                                 response.notificationResponse = notificationResponse;
+                                 [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                             }];
+}
+
+- (void)handleRegisterToolRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerRegisterTool:request.registerToolRequest
+                        peerIdentity:webSocketConnection.peerIdentity
+                             handler:^(ITMRegisterToolResponse *registerToolResponse) {
+                                 response.registerToolResponse = registerToolResponse;
+                                 [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                             }];
+}
+
+- (void)handleSetProfilePropertyRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSetProfileProperty:request.setProfilePropertyRequest
+                                   handler:^(ITMSetProfilePropertyResponse *setProfilePropertyResponse) {
+                                       response.setProfilePropertyResponse = setProfilePropertyResponse;
+                                       [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                                   }];
+}
+
+- (void)handleGetProfilePropertyRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerGetProfileProperty:request.getProfilePropertyRequest
+                                   handler:^(ITMGetProfilePropertyResponse *getProfilePropertyResponse) {
+                                       response.getProfilePropertyResponse = getProfilePropertyResponse;
+                                       [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                                   }];
+}
+
+- (void)handleListSessionsRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerListSessions:request.listSessionsRequest
+                             handler:^(ITMListSessionsResponse *listSessionsResponse) {
+                                 response.listSessionsResponse = listSessionsResponse;
+                                 [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+                             }];
+}
+
+- (void)handleSendTextRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSendText:request.sendTextRequest handler:^(ITMSendTextResponse *sendTextResponse) {
+        response.sendTextResponse = sendTextResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleCreateTabRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerCreateTab:request.createTabRequest handler:^(ITMCreateTabResponse *createTabResponse) {
+        response.createTabResponse = createTabResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleSplitPaneRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSplitPane:request.splitPaneRequest handler:^(ITMSplitPaneResponse *splitPaneResponse) {
+        response.splitPaneResponse = splitPaneResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleSetPropertyRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSetProperty:request.setPropertyRequest handler:^(ITMSetPropertyResponse *setPropertyResponse) {
+        response.setPropertyResponse = setPropertyResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleGetPropertyRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerGetProperty:request.getPropertyRequest handler:^(ITMGetPropertyResponse *getPropertyResponse) {
+        response.getPropertyResponse = getPropertyResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleInjectRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerInject:request.injectRequest handler:^(ITMInjectResponse *injectResponse) {
+        response.injectResponse = injectResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleActivateRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerActivate:request.activateRequest handler:^(ITMActivateResponse *activateResponse) {
+        response.activateResponse = activateResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleVariableRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerVariable:request.variableRequest handler:^(ITMVariableResponse *variableResponse) {
+        response.variableResponse = variableResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleSavedArrangementRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSavedArrangement:request.savedArrangementRequest handler:^(ITMSavedArrangementResponse *savedArrangementResponse) {
+        response.savedArrangementResponse = savedArrangementResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleFocusRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerFocus:request.focusRequest handler:^(ITMFocusResponse *focusResponse) {
+        response.focusResponse = focusResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleListProfilesRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerListProfiles:request.listProfilesRequest handler:^(ITMListProfilesResponse *listProfilesResponse) {
+        response.listProfilesResponse = listProfilesResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleServerOriginatedRpcResultRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerServerOriginatedRPCResult:request.serverOriginatedRpcResultRequest handler:^(ITMServerOriginatedRPCResultResponse *listProfilesResponse) {
+        response.serverOriginatedRpcResultResponse = listProfilesResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+// Runs on execution queue
+- (BOOL)tryHandleResponse:(ITMClientOriginatedMessage *)request
+            toBlockingRPC:(iTermBlockingRPC *)blockingRPC
+               connection:(iTermWebSocketConnection *)webSocketConnection {
+    if (!blockingRPC) {
+        return NO;
+    }
+    if (![blockingRPC.rpcID isEqualToString:request.serverOriginatedRpcResultRequest.requestId]) {
+        return NO;
+    }
+    blockingRPC.result = request.serverOriginatedRpcResultRequest;
+    dispatch_group_leave(blockingRPC.group);
+
+    // Send a response to unblock the script
+    ITMServerOriginatedMessage *response = [[ITMServerOriginatedMessage alloc] init];
+    response.id_p = request.id_p;
+    [self finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+
+    return YES;
+}
+
+- (void)handleMalformedRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+    response.error = @"Invalid request. Upgrade iTerm2 to a newer version.";
+    [self finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+}
+
+- (void)handleUnhandleableRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+    response.error = @"Not ready. This is a bug! Please report it at https://iterm2.com/bugs";
+    [self finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+}
+
+- (void)handleRestartSessionRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerRestartSession:request.restartSessionRequest handler:^(ITMRestartSessionResponse *restartSessionResponse) {
+        response.restartSessionResponse = restartSessionResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleMenuItemRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerMenuItem:request.menuItemRequest handler:^(ITMMenuItemResponse *menuItemResponse) {
+        response.menuItemResponse = menuItemResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+- (void)handleSetTabLayoutRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
+    ITMServerOriginatedMessage *response = [self newResponseForRequest:request];
+
+    __weak __typeof(self) weakSelf = self;
+    [_delegate apiServerSetTabLayout:request.setTabLayoutRequest handler:^(ITMSetTabLayoutResponse *theResponse) {
+        response.setTabLayoutResponse = theResponse;
+        [weakSelf finishHandlingRequestWithResponse:response onConnection:webSocketConnection];
+    }];
+}
+
+// Runs on main queue, either in or not in a transaction.
+- (void)dispatchRequest:(ITMClientOriginatedMessage *)request connection:(iTermWebSocketConnection *)webSocketConnection {
     DLog(@"Got request %@", request);
-    if (request.hasTransactionRequest) {
-        if (request.transactionRequest.begin) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.transactionResponse = [[ITMTransactionResponse alloc] init];
-            response.transactionResponse.status = ITMTransactionResponse_Status_AlreadyInTransaction;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }
+    [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerDidReceiveMessage
+                                                        object:webSocketConnection.key
+                                                      userInfo:@{ @"request": request }];
+    if (!_delegate) {
+        [self handleUnhandleableRequest:request connection:webSocketConnection];
         return;
     }
-    if (request.hasGetBufferRequest) {
-        [_delegate apiServerGetBuffer:request.getBufferRequest
-                              handler:^(ITMGetBufferResponse *getBufferResponse) {
-                                  ITMResponse *response = [[ITMResponse alloc] init];
-                                  response.id_p = request.id_p;
-                                  response.getBufferResponse = getBufferResponse;
-                                  [weakSelf sendResponse:response onConnection:webSocketConnection];
-                              }];
-        return;
-    }
-    if (request.hasGetPromptRequest) {
-        [_delegate apiServerGetPrompt:request.getPromptRequest handler:^(ITMGetPromptResponse *getPromptResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.getPromptResponse = getPromptResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasNotificationRequest) {
-        [_delegate apiServerNotification:request.notificationRequest
-                              connection:webSocketConnection.handle
-                                 handler:^(ITMNotificationResponse *notificationResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.notificationResponse = notificationResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasRegisterToolRequest) {
-        [_delegate apiServerRegisterTool:request.registerToolRequest
-                            peerIdentity:webSocketConnection.peerIdentity
-                                 handler:^(ITMRegisterToolResponse *registerToolResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.registerToolResponse = registerToolResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasSetProfilePropertyRequest) {
-        [_delegate apiServerSetProfileProperty:request.setProfilePropertyRequest
-                                       handler:^(ITMSetProfilePropertyResponse *setProfilePropertyResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.setProfilePropertyResponse = setProfilePropertyResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasListSessionsRequest) {
-        [_delegate apiServerListSessions:request.listSessionsRequest
-                                 handler:^(ITMListSessionsResponse *listSessionsResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.listSessionsResponse = listSessionsResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasSendTextRequest) {
-        [_delegate apiServerSendText:request.sendTextRequest handler:^(ITMSendTextResponse *sendTextResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.sendTextResponse = sendTextResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasCreateTabRequest) {
-        [_delegate apiServerCreateTab:request.createTabRequest handler:^(ITMCreateTabResponse *createTabResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.createTabResponse = createTabResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
-    }
-    if (request.hasSplitPaneRequest) {
-        [_delegate apiServerSplitPane:request.splitPaneRequest handler:^(ITMSplitPaneResponse *splitPaneResponse) {
-            ITMResponse *response = [[ITMResponse alloc] init];
-            response.id_p = request.id_p;
-            response.splitPaneResponse = splitPaneResponse;
-            [weakSelf sendResponse:response onConnection:webSocketConnection];
-        }];
-        return;
+
+    switch (request.submessageOneOfCase) {
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_TransactionRequest:
+            if (request.transactionRequest.begin) {
+                [self handleTransactionRequest:request connection:webSocketConnection];
+            }
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_GetBufferRequest:
+            [self handleGetBufferRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_GetPromptRequest:
+            [self handleGetPromptRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_NotificationRequest:
+            [self handleNotificationRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_RegisterToolRequest:
+            [self handleRegisterToolRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SetProfilePropertyRequest:
+            [self handleSetProfilePropertyRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_GetProfilePropertyRequest:
+            [self handleGetProfilePropertyRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_ListSessionsRequest:
+            [self handleListSessionsRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SendTextRequest:
+            [self handleSendTextRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_CreateTabRequest:
+            [self handleCreateTabRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SplitPaneRequest:
+            [self handleSplitPaneRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SetPropertyRequest:
+            [self handleSetPropertyRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_GetPropertyRequest:
+            [self handleGetPropertyRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_InjectRequest:
+            [self handleInjectRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_ActivateRequest:
+            [self handleActivateRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_VariableRequest:
+            [self handleVariableRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SavedArrangementRequest:
+            [self handleSavedArrangementRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_FocusRequest:
+            [self handleFocusRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_ListProfilesRequest:
+            [self handleListProfilesRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_ServerOriginatedRpcResultRequest:
+            [self handleServerOriginatedRpcResultRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_GPBUnsetOneOfCase:
+            [self handleMalformedRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_RestartSessionRequest:
+            [self handleRestartSessionRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_MenuItemRequest:
+            [self handleMenuItemRequest:request connection:webSocketConnection];
+            break;
+
+        case ITMClientOriginatedMessage_Submessage_OneOfCase_SetTabLayoutRequest:
+            [self handleSetTabLayoutRequest:request connection:webSocketConnection];
+            break;
     }
 }
 
@@ -436,39 +866,48 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
 }
 
 // Runs on execution queue
-- (void)enqueueOrDispatchRequest:(ITMRequest *)request onConnection:(iTermWebSocketConnection *)webSocketConnection {
+- (void)enqueueOrDispatchRequest:(ITMClientOriginatedMessage *)request onConnection:(iTermWebSocketConnection *)webSocketConnection {
     if (self.transaction) {
         iTermAPIRequest *apiRequest = [[iTermAPIRequest alloc] init];
         apiRequest.connection = webSocketConnection;
         apiRequest.request = request;
         [self addRequestToTransaction:apiRequest];
-    } else {
-        [self dispatchRequestWhileNotInTransaction:request connection:webSocketConnection];
+        return;
     }
+
+    if ([self tryHandleResponse:request toBlockingRPC:self.blockingRPC connection:webSocketConnection]) {
+        return;
+    }
+
+    [self dispatchRequestWhileNotInTransaction:request connection:webSocketConnection];
 }
 
 #pragma mark - iTermWebSocketConnectionDelegate
 
+// _queue
 - (void)webSocketConnectionDidTerminate:(iTermWebSocketConnection *)webSocketConnection {
-    dispatch_async(_queue, ^{
-        DLog(@"Connection terminated");
-        [_connections removeObjectForKey:webSocketConnection.handle];
-        dispatch_async(_executionQueue, ^{
-            if (self.transaction.connection == webSocketConnection) {
-                iTermAPITransaction *transaction = self.transaction;
-                self.transaction = nil;
-                [transaction signal];
-            }
-        });
+    DLog(@"Connection terminated");
+    [self->_connections removeObjectForKey:webSocketConnection.handle];
+    dispatch_async(self->_executionQueue, ^{
+        if (self.transaction.connection == webSocketConnection) {
+            iTermAPITransaction *transaction = self.transaction;
+            self.transaction = nil;
+            [transaction signal];
+        }
+    });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self->_delegate apiServerDidCloseConnection:webSocketConnection.handle];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [_delegate apiServerRemoveSubscriptionsForConnection:webSocketConnection.handle];
+            [[NSNotificationCenter defaultCenter] postNotificationName:iTermAPIServerConnectionClosed
+                                                                object:webSocketConnection.key];
         });
     });
 }
 
+// _queue
 - (void)webSocketConnection:(iTermWebSocketConnection *)webSocketConnection didReadFrame:(iTermWebSocketFrame *)frame {
     if (frame.opcode == iTermWebSocketOpcodeBinary) {
-        ITMRequest *request = [ITMRequest parseFromData:frame.payload error:nil];
+        ITMClientOriginatedMessage *request = [ITMClientOriginatedMessage parseFromData:frame.payload error:nil];
         NSLog(@"Dispatch %@", request);
         if (request) {
             DLog(@"Received request: %@", request);
@@ -482,3 +921,4 @@ const char *kWebSocketConnectionHandleAssociatedObjectKey = "kWebSocketConnectio
 }
 
 @end
+

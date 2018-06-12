@@ -10,6 +10,7 @@
 #import "iTermPreferences.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSTextField+iTerm.h"
 #import "PreferencePanel.h"
@@ -56,9 +57,6 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_keyMap release];
-    [_keys release];
-    [super dealloc];
 }
 
 - (PreferenceInfo *)infoForKey:(NSString *)key {
@@ -179,7 +177,10 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 
             case kPreferenceInfoTypeIntegerTextField:
                 [self applyIntegerConstraints:info];
-                [self setInt:[sender separatorTolerantIntValue] forKey:info.key];
+                const int intValue = [sender separatorTolerantIntValue];
+                if (!info.deferUpdate) {
+                    [self setInt:intValue forKey:info.key];
+                }
                 break;
 
             case kPreferenceInfoTypeDoubleTextField: {
@@ -213,6 +214,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                 break;
 
             case kPreferenceInfoTypeMatrix:
+            case kPreferenceInfoTypeRadioButton:
                 assert(false);  // Must use a custom setting changed handler
 
             case kPreferenceInfoTypePopup:
@@ -272,8 +274,8 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     if (!settingChanged || !update) {
         assert([self defaultValueForKey:key isCompatibleWithType:type]);
         assert(type != kPreferenceInfoTypeMatrix);  // Matrix type requires both.
+        assert(type != kPreferenceInfoTypeRadioButton);  // This is just a modernized matrix
     }
-
     PreferenceInfo *info = [PreferenceInfo infoForPreferenceWithKey:key
                                                                type:type
                                                             control:control];
@@ -370,6 +372,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
         }
 
         case kPreferenceInfoTypeMatrix:
+        case kPreferenceInfoTypeRadioButton:
             assert(false);  // Must use onChange() only.
 
         case kPreferenceInfoTypeColorWell: {
@@ -424,6 +427,34 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     // Documented as doing nothing.
 }
 
+#pragma mark - Private
+
+- (void)saveDeferredUpdates {
+    [_keys enumerateObjectsUsingBlock:^(id  _Nonnull key, BOOL * _Nonnull stop) {
+        PreferenceInfo *info = [self infoForKey:key];
+        if (info.deferUpdate) {
+            switch (info.type) {
+                case kPreferenceInfoTypeIntegerTextField:
+                    [self setInt:[[NSTextField castFrom:info.control] separatorTolerantIntValue] forKey:key];
+                    break;
+
+                case kPreferenceInfoTypeCheckbox:
+                case kPreferenceInfoTypeInvertedCheckbox:
+                case kPreferenceInfoTypeUnsignedIntegerTextField:
+                case kPreferenceInfoTypeDoubleTextField:
+                case kPreferenceInfoTypeStringTextField:
+                case kPreferenceInfoTypePopup:
+                case kPreferenceInfoTypeUnsignedIntegerPopup:
+                case kPreferenceInfoTypeSlider:
+                case kPreferenceInfoTypeTokenField:
+                case kPreferenceInfoTypeMatrix:
+                case kPreferenceInfoTypeColorWell:
+                case kPreferenceInfoTypeRadioButton:
+                    break;
+            }
+        }
+    }];
+}
 #pragma mark - Constraints
 
 // Pick out the digits from s and clamp it to a range.
@@ -506,13 +537,20 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
             case kPreferenceInfoTypeColorWell:
             case kPreferenceInfoTypeInvertedCheckbox:
             case kPreferenceInfoTypeMatrix:
+            case kPreferenceInfoTypeRadioButton:
             case kPreferenceInfoTypePopup:
             case kPreferenceInfoTypeSlider:
             case kPreferenceInfoTypeStringTextField:
             case kPreferenceInfoTypeTokenField:
-            case kPreferenceInfoTypeIntegerTextField:
             case kPreferenceInfoTypeUnsignedIntegerPopup:
             case kPreferenceInfoTypeUnsignedIntegerTextField:
+                break;
+
+            case kPreferenceInfoTypeIntegerTextField:
+                if (info.deferUpdate) {
+                    const int intValue = [[NSTextField castFrom:info.control] separatorTolerantIntValue];
+                    [self setInt:intValue forKey:info.key];
+                }
                 break;
 
             case kPreferenceInfoTypeDoubleTextField:
@@ -534,24 +572,19 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     }
     PreferenceInfo *info = [self infoForKey:key];
     assert(info);
-    [self updateValueForInfo:info];
+    if (!info.deferUpdate) {
+        [self updateValueForInfo:info];
+    }
 }
 
 - (void)preferencePanelWillClose:(NSNotification *)notification {
     if (_preferencePanel == notification.object) {
+        [self saveDeferredUpdates];
         // Give subclasses a chance to do something first.
         [self windowWillClose];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            _preferencePanel = nil;
-            // Breaks reference cycles in settingChanged and update blocks. Done in a delayed perform
-            // because windowWillClose may cause notifications to be posted (e.g., unicode version
-            // changed) that requires access to the keymap.
-            for (NSControl *key in _keyMap) {
-                PreferenceInfo *info = [_keyMap objectForKey:key];
-                [info clearBlocks];
-            }
-            [_keyMap removeAllObjects];
+            [self->_keyMap removeAllObjects];
         });
     }
 }

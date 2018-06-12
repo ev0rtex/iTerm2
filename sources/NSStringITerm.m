@@ -26,11 +26,14 @@
  */
 
 #import "DebugLogging.h"
+#import "iTermTuple.h"
 #import "NSData+iTerm.h"
 #import "NSLocale+iTerm.h"
 #import "NSMutableAttributedString+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSCharacterSet+iTerm.h"
+#import "NSJSONSerialization+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "RegexKitLite.h"
 #import "ScreenChar.h"
 #import <apr-1/apr_base64.h>
@@ -1159,7 +1162,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
 
 - (NSString *)controlCharacter {
     unichar c = [[self lowercaseString] characterAtIndex:0];
-    if (c < 'a' || c >= 'z') {
+    if (c < 'a' || c > 'z') {
         return @"";
     }
     c -= 'a' - 1;
@@ -1303,13 +1306,13 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     return [attributedString heightForWidth:maxWidth];
 }
 
-- (NSArray *)keyValuePair {
+- (iTermTuple *)keyValuePair {
     NSRange range = [self rangeOfString:@"="];
     if (range.location == NSNotFound) {
-        return @[ self, @"" ];
+        return nil;
     } else {
-        return @[ [self substringToIndex:range.location],
-                  [self substringFromIndex:range.location + 1] ];
+        return [iTermTuple tupleWithObject:[self substringToIndex:range.location]
+                                 andObject:[self substringFromIndex:range.location + 1]];
     }
 }
 
@@ -1325,8 +1328,102 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     return temp;
 }
 
+// NOTE: This supports nested inline expressions.
+- (void)enumerateSwiftySubstrings:(void (^)(NSString *substring, BOOL isLiteral))block {
+    typedef enum {
+        SWIFTY_STATE_LITERAL,
+        SWIFTY_STATE_LITERAL_ESC,
+        SWIFTY_STATE_EXPR,
+        SWIFTY_STATE_EXPR_STR,
+        SWIFTY_STATE_EXPR_STR_ESC
+    } SWIFTY_STATE;
+    SWIFTY_STATE state = SWIFTY_STATE_LITERAL;
+
+    int parens = 0;
+    NSInteger start = 0;
+    NSMutableArray<NSNumber *> *parensStack = [NSMutableArray array];
+    for (NSInteger i = 0; i < self.length; i++) {
+        unichar c = [self characterAtIndex:i];
+        switch (state) {
+            case SWIFTY_STATE_LITERAL:
+                if (c == '\\') {
+                    state = SWIFTY_STATE_LITERAL_ESC;
+                }
+                break;
+
+            case SWIFTY_STATE_LITERAL_ESC:
+                if (c == '(') {
+                    // Output range up to but not including \(
+                    if (i - 1 - start > 0) {
+                        block([self substringWithRange:NSMakeRange(start, i - 1 - start)], YES);
+                    }
+                    start = i + 1;
+                    parens = 1;
+                    state = SWIFTY_STATE_EXPR;
+                }
+                break;
+
+            case SWIFTY_STATE_EXPR:
+                if (c == '(') {
+                    parens++;
+                } else if (c == ')') {
+                    parens--;
+                    if (parens == 0) {
+                        if (parensStack.count == 0) {
+                            // Output range up to but not including )
+                            if (i - start > 0) {
+                                block([self substringWithRange:NSMakeRange(start, i - start)], NO);
+                            }
+                            // Next output begins after )
+                            start = i + 1;
+                            state = SWIFTY_STATE_LITERAL;
+                            break;  // do not output this paren. The opening \( was also not output.
+                        } else {
+                            // Ended a nested expression
+                            parens = parensStack.lastObject.intValue;
+                            [parensStack removeLastObject];
+                            state = SWIFTY_STATE_EXPR_STR;
+                        }
+                    }
+                } else if (c == '"') {
+                    state = SWIFTY_STATE_EXPR_STR;
+                }
+                break;
+
+            case SWIFTY_STATE_EXPR_STR:
+                if (c == '\\') {
+                    state = SWIFTY_STATE_EXPR_STR_ESC;
+                } else if (c == '"') {
+                    state = SWIFTY_STATE_EXPR;
+                }
+                break;
+
+            case SWIFTY_STATE_EXPR_STR_ESC:
+                if (c == '(') {
+                    [parensStack addObject:@(parens)];
+                    parens = 1;  // catch but don't output ) in expr state.
+                    state = SWIFTY_STATE_EXPR;
+                }
+                break;
+        }
+    }
+
+    if (self.length > start) {
+        block([self substringWithRange:NSMakeRange(start, self.length - start)], YES);
+    }
+}
+
 // Replace substrings like \(foo) or \1...\9 with the value of vars[@"foo"] or vars[@"1"].
 - (NSString *)stringByReplacingVariableReferencesWithVariables:(NSDictionary *)vars {
+    NSString *(^stringify)(id) = ^NSString *(id x) {
+        if ([NSString castFrom:x]) {
+            return x;
+        } else if ([NSNumber castFrom:x]) {
+            return [x stringValue];
+        } else {
+            return [NSJSONSerialization it_jsonStringForObject:x];
+        }
+    };
     unichar *chars = (unichar *)malloc(self.length * sizeof(unichar));
     [self getCharacters:chars];
     enum {
@@ -1355,7 +1452,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
                     // \1...\9 also work as subs.
                     NSString *singleCharVar = [NSString stringWithFormat:@"%C", c];
                     if (singleCharVar.integerValue > 0 && vars[singleCharVar]) {
-                        [result appendString:vars[singleCharVar]];
+                        [result appendString:stringify(vars[singleCharVar])];
                     } else {
                         [result appendFormat:@"\\%C", c];
                     }
@@ -1366,7 +1463,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
             case kInParens:
                 if (c == ')') {
                     state = kLiteral;
-                    NSString *value = vars[varName];
+                    NSString *value = stringify(vars[varName]);
                     if (value) {
                         [result appendString:value];
                     }
@@ -1378,10 +1475,6 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     }
     free(chars);
     return result;
-}
-
-- (BOOL)containsString:(NSString *)substring {
-    return [self rangeOfString:substring].location != NSNotFound;
 }
 
 - (NSString *)stringRepeatedTimes:(int)n {
@@ -1460,14 +1553,24 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
 
 - (NSSet *)doubleDollarVariables {
     NSMutableSet *set = [NSMutableSet set];
-    [self enumerateStringsMatchedByRegex:@"\\$\\$(.*?)\\$\\$"
-                                 options:RKLNoOptions
-                                 inRange:NSMakeRange(0, self.length)
-                                   error:nil
-                      enumerationOptions:RKLRegexEnumerationNoOptions
-                              usingBlock:^(NSInteger captureCount, NSString *const *capturedStrings, const NSRange *capturedRanges, volatile BOOL *const stop) {
-                                  [set addObject:[[capturedStrings[0] copy] autorelease]];
-                              }];
+    NSRange rangeToSearch = NSMakeRange(0, self.length);
+    NSInteger start = -1;
+    NSRange range;
+    while (rangeToSearch.length > 0) {
+        range = [self rangeOfString:@"$$" options:NSLiteralSearch range:rangeToSearch];
+        if (start < 0) {
+            start = range.location;
+        } else {
+            NSRange capture = NSMakeRange(start, NSMaxRange(range) - start);
+            NSString *string = [self substringWithRange:capture];
+            if (string.length > 4) {  // length of 4 implies $$$$, which should be interpreted as $$
+                [set addObject:string];
+            }
+            start = -1;
+        }
+        rangeToSearch = NSMakeRange(NSMaxRange(range), MAX(0, (NSInteger)self.length - (NSInteger)NSMaxRange(range)));
+    }
+
     return set;
 }
 
@@ -1835,6 +1938,38 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
         addRange(0x1F900, 0x1F9FF);  // Supplemental Symbols and Pictographs
     });
     return [emojiSet longCharacterIsMember:[self firstCharacter]];
+}
+
+- (NSString *)jsonEncodedString {
+    NSMutableString *s = [NSMutableString stringWithString:self];
+    [s replaceOccurrencesOfString:@"\"" withString:@"\\\"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"/" withString:@"\\/" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"\n" withString:@"\\n" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"\b" withString:@"\\b" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"\f" withString:@"\\f" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"\r" withString:@"\\r" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    [s replaceOccurrencesOfString:@"\t" withString:@"\\t" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [s length])];
+    return [NSString stringWithFormat:@"\"%@\"", s];
+}
+
++ (NSString *)it_formatBytes:(double)bytes {
+    if (bytes < 1) {
+        return [NSString stringWithFormat:@"%.04lf bytes", bytes];
+    } else if (bytes < 1024) {
+        return [NSString stringWithFormat:@"%d bytes", (int)bytes];
+    } else if (bytes < 10240) {
+        return [NSString stringWithFormat:@"%.1lf kB", bytes / 10];
+    } else if (bytes < 1048576) {
+        return [NSString stringWithFormat:@"%d kB", (int)bytes / 1024];
+    } else if (bytes < 10485760) {
+        return [NSString stringWithFormat:@"%.1lf MB", bytes / 1048576];
+    } else if (bytes < 1024.0 * 1024.0 * 1024.0) {
+        return [NSString stringWithFormat:@"%.0lf MB", bytes / 1048576];
+    } else if (bytes < 1024.0 * 1024.0 * 1024.0 * 10) {
+        return [NSString stringWithFormat:@"%.1lf GB", bytes / (1024.0 * 1024.0 * 1024.0)];
+    } else {
+        return [NSString stringWithFormat:@"%.0lf GB", bytes / (1024.0 * 1024.0 * 1024.0)];
+    }
 }
 
 @end

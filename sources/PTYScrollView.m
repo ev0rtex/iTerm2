@@ -26,6 +26,7 @@
 #import "iTerm.h"
 #import "FutureMethods.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermScrollAccumulator.h"
 #import "PreferencePanel.h"
 #import "PTYScrollView.h"
 #import "PTYTextView.h"
@@ -33,8 +34,7 @@
 #import <Cocoa/Cocoa.h>
 
 @interface PTYScroller()
-// Total number of rows scrolled by. Will always be in (-1, 1).
-@property(nonatomic) CGFloat accumulatedDeltaY;
+@property (nonatomic, retain) iTermScrollAccumulator *accumulator;
 @end
 
 @implementation PTYScroller
@@ -43,11 +43,26 @@
     return YES;
 }
 
+- (void)dealloc {
+    [_accumulator release];
+    [super dealloc];
+}
+
+- (iTermScrollAccumulator *)accumulator {
+    if (!_accumulator) {
+        _accumulator = [[iTermScrollAccumulator alloc] init];
+    }
+    return _accumulator;
+}
+
 - (void)setUserScroll:(BOOL)userScroll {
     if (!userScroll && _userScroll) {
-        _accumulatedDeltaY = 0;
+        [_accumulator reset];
     }
-    _userScroll = userScroll;
+    if (userScroll != _userScroll) {
+        _userScroll = userScroll;
+        [_ptyScrollerDelegate userScrollDidChange:userScroll];
+    }
 }
 
 - (void)mouseDown:(NSEvent *)theEvent {
@@ -93,6 +108,10 @@
     NSTimer *timer_;
 }
 
++ (BOOL)isCompatibleWithResponsiveScrolling {
+    return NO;
+}
+
 - (instancetype)initWithFrame:(NSRect)frame hasVerticalScroller:(BOOL)hasVerticalScroller {
     self = [super initWithFrame:frame];
     if (self) {
@@ -104,7 +123,7 @@
         aScroller = [[PTYScroller alloc] init];
         [self setVerticalScroller:aScroller];
         [aScroller release];
-
+        self.verticalScrollElasticity = NSScrollElasticityNone;
         creationDate_ = [[NSDate date] retain];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(it_scrollViewDidScroll:) name:NSScrollViewDidLiveScrollNotification object:self];
     }
@@ -134,48 +153,46 @@
     [self detectUserScroll];
 }
 
-static CGFloat RoundTowardZero(CGFloat value) {
-    if (value > 0) {
-        return floor(value);
-    } else {
-        return ceil(value);
-    }
-}
-
 - (CGFloat)accumulateVerticalScrollFromEvent:(NSEvent *)theEvent {
-    CGFloat delta = theEvent.scrollingDeltaY;
-    if (theEvent.hasPreciseScrollingDeltas) {
-        delta /= self.verticalLineScroll;
+    const CGFloat lineHeight = self.verticalLineScroll;
+    if ([iTermAdvancedSettingsModel useModernScrollWheelAccumulator]) {
+        return [self.ptyVerticalScroller.accumulator deltaYForEvent:theEvent lineHeight:lineHeight];
+    } else {
+        return [self.ptyVerticalScroller.accumulator legacyDeltaYForEvent:theEvent lineHeight:lineHeight];
     }
-    if ([iTermAdvancedSettingsModel sensitiveScrollWheel]) {
-        if (delta > 0) {
-            return ceil(delta);
-        } else if (delta < 0) {
-            return floor(delta);
-        } else {
-            return 0;
-        }
-    }
-    PTYScroller *verticalScroller = (PTYScroller *)[self verticalScroller];
-    verticalScroller.accumulatedDeltaY += delta;
-    CGFloat amount = 0;
-    if (fabs(verticalScroller.accumulatedDeltaY) >= 1) {
-        amount = RoundTowardZero(verticalScroller.accumulatedDeltaY);
-        verticalScroller.accumulatedDeltaY = verticalScroller.accumulatedDeltaY - amount;
-    }
-    return amount;
 }
 
+// The scroll wheel handling code is like Mr. Burns: it has every possible
+// disease and they are in perfect balance.
+//
+// Overriding scrollWheel: is a horror show of undocumented crazytimes. This is
+// hinted at in various places in the documentation, release notes from a
+// decade ago, stack overflow, and my nightmares. But it must be done.
+//
+// If you turn on the "hide scrollbars" setting then PTYTextView's scrollWheel:
+// does not get momentum scrolling. The only way to get momentum scrolling in
+// that case is to do what is done in the else branch here.
+//
+// Note that -[PTYTextView scrollWheel:] can elect not to call [super
+// scrollWheel] when reporting mouse events, in which case this does not get
+// called.
+//
+// We HAVE to call super when the scroll bars are not hidden because otherwise
+// you get issue 6637.
 - (void)scrollWheel:(NSEvent *)theEvent {
-    NSRect scrollRect;
+    if (self.hasVerticalScroller) {
+        [super scrollWheel:theEvent];
+    } else {
+        NSRect scrollRect;
 
-    scrollRect = [self documentVisibleRect];
+        scrollRect = [self documentVisibleRect];
 
-    CGFloat amount = [self accumulateVerticalScrollFromEvent:theEvent];
-    scrollRect.origin.y -= amount * [self verticalLineScroll];
-    [[self documentView] scrollRectToVisible:scrollRect];
+        CGFloat amount = [self accumulateVerticalScrollFromEvent:theEvent];
+        scrollRect.origin.y -= amount * self.verticalLineScroll;
+        [[self documentView] scrollRectToVisible:scrollRect];
 
-    [self detectUserScroll];
+        [self detectUserScroll];
+    }
 }
 
 - (void)detectUserScroll {

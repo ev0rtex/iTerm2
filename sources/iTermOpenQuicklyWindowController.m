@@ -1,5 +1,7 @@
 #import "iTermOpenQuicklyWindowController.h"
 #import "ITAddressBookMgr.h"
+#import "iTermApplication.h"
+#import "iTermApplicationDelegate.h"
 #import "iTermController.h"
 #import "iTermHotKeyController.h"
 #import "iTermProfileHotKey.h"
@@ -8,7 +10,9 @@
 #import "iTermOpenQuicklyTableCellView.h"
 #import "iTermOpenQuicklyTableRowView.h"
 #import "iTermOpenQuicklyTextField.h"
+#import "iTermScriptsMenuController.h"
 #import "NSColor+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
 #import "PseudoTerminal.h"
 #import "PTYTab.h"
@@ -28,14 +32,14 @@
 
 @implementation iTermOpenQuicklyWindowController {
     // Text field where quries are entered
-    IBOutlet iTermOpenQuicklyTextField *_textField;
+    __weak IBOutlet iTermOpenQuicklyTextField *_textField;
 
     // Table that shows search results
-    IBOutlet NSTableView *_table;
+    __weak IBOutlet NSTableView *_table;
 
-    IBOutlet NSScrollView *_scrollView;
+    __weak IBOutlet NSScrollView *_scrollView;
 
-    IBOutlet SolidColorView *_divider;
+    __weak IBOutlet SolidColorView *_divider;
 }
 
 + (instancetype)sharedInstance {
@@ -201,7 +205,7 @@
         } else if ([object isKindOfClass:[iTermOpenQuicklyArrangementItem class]]) {
             // Load window arrangement
             iTermOpenQuicklyArrangementItem *item = (iTermOpenQuicklyArrangementItem *)object;
-            [[iTermController sharedInstance] loadWindowArrangementWithName:item.identifier asTabs:item.inTabs];
+            [[iTermController sharedInstance] loadWindowArrangementWithName:item.identifier asTabsInTerminal:item.inTabs ? [[iTermController sharedInstance] currentTerminal] : nil];
         } else if ([object isKindOfClass:[iTermOpenQuicklyChangeProfileItem class]]) {
             // Change profile
             PseudoTerminal *term = [[iTermController sharedInstance] currentTerminal];
@@ -217,6 +221,9 @@
             _textField.stringValue = [object identifier];
             [self update];
             return;
+        } else if ([object isKindOfClass:[iTermOpenQuicklyScriptItem class]]) {
+            iTermOpenQuicklyScriptItem *item = [iTermOpenQuicklyScriptItem castFrom:object];
+            [[[[iTermApplication sharedApplication] delegate] scriptsMenuController] launchScriptWithRelativePath:item.identifier];
         }
     }
 

@@ -60,8 +60,8 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (NSEdgeInsets)margins {
-    const CGFloat MARGIN_WIDTH = [iTermAdvancedSettingsModel terminalMargin] * self.configuration.scale;
-    const CGFloat MARGIN_HEIGHT = [iTermAdvancedSettingsModel terminalVMargin] * self.configuration.scale;
+    const CGFloat MARGIN_WIDTH = ([iTermAdvancedSettingsModel terminalMargin] - 1) * self.configuration.scale;
+    const CGFloat MARGIN_HEIGHT = 0;
 
     CGSize usableSize = CGSizeMake(self.cellConfiguration.viewportSize.x - MARGIN_WIDTH * 2,
                                    self.cellConfiguration.viewportSize.y - MARGIN_HEIGHT * 2);

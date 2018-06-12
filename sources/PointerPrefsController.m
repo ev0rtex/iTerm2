@@ -148,10 +148,8 @@ typedef enum {
 }
 
 - (void)dealloc {
-    [origKey_ release];
     tableView_.delegate = nil;
     tableView_.dataSource = nil;
-    [super dealloc];
 }
 
 + (NSDictionary *)dictForAction:(NSString *)action
@@ -535,7 +533,7 @@ typedef enum {
         NSMutableDictionary *temp = [NSMutableDictionary dictionaryWithDictionary:[PointerPrefsController defaultSettings]];
         if ([iTermPreferences boolForKey:kPreferenceKeyThreeFingerEmulatesMiddle]) {
             // Find all actions that use middle button and add corresponding three-finger gesture.
-            NSMutableDictionary *tempCopy = [[temp mutableCopy] autorelease];
+            NSMutableDictionary *tempCopy = [temp mutableCopy];
             for (NSString *key in temp) {
                 if ([PointerPrefsController keyIsButton:key] &&
                     [PointerPrefsController buttonForKey:key] == kMiddleButton) {
@@ -569,7 +567,7 @@ typedef enum {
                 }
             }
         }
-        defaultDict = [temp retain];
+        defaultDict = temp;
     }
     return defaultDict;
 }
@@ -620,7 +618,9 @@ typedef enum {
     NSString *key = [PointerPrefsController keyForButton:buttonNumber
                                                   clicks:numClicks
                                                modifiers:modMask];
-    return [[[PointerPrefsController settings] objectForKey:key] objectForKey:kArgumentKey];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [setting objectForKey:kArgumentKey];
 }
 
 + (NSString *)actionWithButton:(int)buttonNumber
@@ -631,7 +631,9 @@ typedef enum {
                                                   clicks:numClicks
                                                modifiers:modMask];
     DLog(@"Look up key %@", key);
-    NSString *action = [[[PointerPrefsController settings] objectForKey:key] objectForKey:kActionKey];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    NSString *action = [setting objectForKey:kActionKey];
     return action;
 }
 
@@ -666,7 +668,9 @@ typedef enum {
     key = [PointerPrefsController keyForGesture:gesture
                                       modifiers:modMask];
     DLog(@"Look up action for gesture %@", key);
-    return [[[PointerPrefsController settings] objectForKey:key] objectForKey:kActionKey];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [setting objectForKey:kActionKey];
 }
 
 + (NSString *)argumentForGesture:(NSString *)gesture
@@ -675,7 +679,9 @@ typedef enum {
     NSString *key;
     key = [PointerPrefsController keyForGesture:gesture
                                       modifiers:modMask];
-    return [[[PointerPrefsController settings] objectForKey:key] objectForKey:kArgumentKey];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [setting objectForKey:kArgumentKey];
 }
 
 + (BOOL)haveThreeFingerTapEvents
@@ -781,14 +787,14 @@ typedef enum {
     }
 }
 
-+ (NSString *)actionForKey:(NSString *)key
-{
-    return [[[PointerPrefsController settings] objectForKey:key] objectForKey:kActionKey];
++ (NSString *)actionForKey:(NSString *)key {
+    NSDictionary *setting = [[PointerPrefsController settings] objectForKey:key];
+    return [setting objectForKey:kActionKey];
 }
 
-+ (NSString *)argumentForKey:(NSString *)key
-{
-    return [[[PointerPrefsController settings] objectForKey:key] objectForKey:kArgumentKey];
++ (NSString *)argumentForKey:(NSString *)key {
+    NSDictionary *setting = [[PointerPrefsController settings] objectForKey:key];
+    return [setting objectForKey:kArgumentKey];
 }
 
 - (void)updateArgumentFieldsForAction:(NSString *)actionIdent argument:(NSString *)currentArg
@@ -881,8 +887,7 @@ typedef enum {
         [editButton_ selectItemWithTag:[PointerPrefsController tagForGestureIdentifier:gestureIdent]];
         [editClickType_ selectItem:nil];
     }
-    [origKey_ autorelease];
-    origKey_ = [key retain];
+    origKey_ = key;
     [self buttonOrGestureChanged:nil];
     [ok_ setEnabled:[self okShouldBeEnabled]];
 }
@@ -943,9 +948,13 @@ typedef enum {
 
 - (void)editKey:(NSString *)key {
     [self loadKeyIntoEditPane:key];
+    __weak __typeof(self) weakSelf = self;
     [[[PreferencePanel sharedInstance] window] beginSheet:panel_
                                         completionHandler:^(NSModalResponse returnCode) {
-                                            [panel_ close];
+                                            __strong __typeof(weakSelf) strongSelf = self;
+                                            if (strongSelf) {
+                                                [strongSelf->panel_ close];
+                                            }
                                         }];
 }
 

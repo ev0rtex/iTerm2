@@ -43,7 +43,6 @@
 
 @end
 
-static NSString *const kRefreshProfileTable = @"kRefreshProfileTable";
 static const CGFloat kExtraMarginBetweenWindowBottomAndTabViewForEditCurrentSessionMode = 7;
 static const CGFloat kSideMarginsWithinInnerTabView = 11;
 NSString *const kProfileSessionNameDidEndEditing = @"kProfileSessionNameDidEndEditing";
@@ -111,15 +110,14 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     IBOutlet ProfilesAdvancedPreferencesViewController *_advancedViewController;
 
     CGFloat _minWidth;
+
+    BulkCopyProfilePreferencesWindowController *_bulkCopyController;
+    NSRect _desiredFrame;
 }
 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(refreshProfileTable)
-                                                     name:kRefreshProfileTable
-                                                   object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(reloadProfiles)
                                                      name:kReloadAllProfiles
@@ -138,7 +136,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [super dealloc];
+    _profilesListView.delegate = nil;
 }
 
 #pragma mark - iTermPreferencesBaseViewController
@@ -192,17 +190,17 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
             // If the view is too tall, wrap it in a scroll view.
             NSRect theFrame = NSMakeRect(0, 0, view.frame.size.width, kMaxHeight);
             iTermSizeRememberingView *sizeRememberingView =
-            [[[iTermSizeRememberingView alloc] initWithFrame:theFrame] autorelease];
+            [[iTermSizeRememberingView alloc] initWithFrame:theFrame];
             sizeRememberingView.autoresizingMask = (NSViewWidthSizable | NSViewHeightSizable);
             sizeRememberingView.autoresizesSubviews = YES;
-            NSScrollView *scrollView = [[[NSScrollView alloc] initWithFrame:theFrame] autorelease];
+            NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:theFrame];
             scrollView.autoresizingMask = (NSViewWidthSizable | NSViewHeightSizable);
             scrollView.drawsBackground = NO;
             scrollView.hasVerticalScroller = YES;
             scrollView.hasHorizontalScroller = NO;
 
             iTermFlippedView *flippedView =
-                [[[iTermFlippedView alloc] initWithFrame:view.bounds] autorelease];
+                [[iTermFlippedView alloc] initWithFrame:view.bounds];
             [flippedView addSubview:view];
             [flippedView flipSubviews];
 
@@ -335,9 +333,6 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 
     [self updateSubviewsForProfile:profile];
     if (!_tabView.isHidden) {
-        // Epilogue
-        [self reloadData];
-
         [[NSNotificationCenter defaultCenter] postNotificationName:kPreferencePanelDidUpdateProfileFields
                                                             object:nil
                                                           userInfo:nil];
@@ -452,6 +447,10 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     NSRect frame = [window frameRectForContentRect:NSMakeRect(windowTopLeft.x, 0, contentSize.width, contentSize.height)];
     frame.origin.y = windowTopLeft.y - frame.size.height;
 
+    if (NSEqualRects(_desiredFrame, frame)) {
+        return;
+    }
+    _desiredFrame = frame;
     [window setFrame:frame display:YES animate:animated];
 }
 
@@ -488,7 +487,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 }
 
 - (IBAction)addProfile:(id)sender {
-    NSMutableDictionary* newDict = [[[NSMutableDictionary alloc] init] autorelease];
+    NSMutableDictionary* newDict = [[NSMutableDictionary alloc] init];
     // Copy the default profile's settings in
     Profile* prototype = [[_delegate profilePreferencesModel] defaultBookmark];
     if (!prototype) {
@@ -544,7 +543,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     Profile* destination = [[ProfileModel sharedInstance] bookmarkWithGuid:profileGuid];
     // TODO: changing color presets in cmd-i causes profileGuid=null.
     if (sourceProfile && destination) {
-        NSMutableDictionary* copyOfSource = [[sourceProfile mutableCopy] autorelease];
+        NSMutableDictionary* copyOfSource = [sourceProfile mutableCopy];
         [copyOfSource setObject:profileGuid forKey:KEY_GUID];
         [copyOfSource removeObjectForKey:KEY_ORIGINAL_GUID];
         [copyOfSource setObject:[destination objectForKey:KEY_NAME] forKey:KEY_NAME];
@@ -563,22 +562,26 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 - (IBAction)openCopyBookmarks:(id)sender
 {
     Profile *profile = [self selectedProfile];
-    BulkCopyProfilePreferencesWindowController *bulkCopyController =
+    _bulkCopyController =
         [[BulkCopyProfilePreferencesWindowController alloc] init];
-    bulkCopyController.sourceGuid = profile[KEY_GUID];
+    _bulkCopyController.sourceGuid = profile[KEY_GUID];
 
-    bulkCopyController.keysForColors = [_colorsViewController keysForBulkCopy];
-    bulkCopyController.keysForText = [_textViewController keysForBulkCopy];
-    bulkCopyController.keysForWindow = [_windowViewController keysForBulkCopy];
-    bulkCopyController.keysForTerminal = [_terminalViewController keysForBulkCopy];
-    bulkCopyController.keysForSession = [_sessionViewController keysForBulkCopy];
-    bulkCopyController.keysForKeyboard = [_keysViewController keysForBulkCopy];
-    bulkCopyController.keysForAdvanced = [_advancedViewController keysForBulkCopy];
+    _bulkCopyController.keysForColors = [_colorsViewController keysForBulkCopy];
+    _bulkCopyController.keysForText = [_textViewController keysForBulkCopy];
+    _bulkCopyController.keysForWindow = [_windowViewController keysForBulkCopy];
+    _bulkCopyController.keysForTerminal = [_terminalViewController keysForBulkCopy];
+    _bulkCopyController.keysForSession = [_sessionViewController keysForBulkCopy];
+    _bulkCopyController.keysForKeyboard = [_keysViewController keysForBulkCopy];
+    _bulkCopyController.keysForAdvanced = [_advancedViewController keysForBulkCopy];
 
-    [self.view.window beginSheet:bulkCopyController.window completionHandler:^(NSModalResponse returnCode) {
-        [bulkCopyController.window close];
-        [bulkCopyController autorelease];
-        [[_delegate profilePreferencesModel] flush];
+    __weak __typeof(self) weakSelf = self;
+    [self.view.window beginSheet:_bulkCopyController.window completionHandler:^(NSModalResponse returnCode) {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        [strongSelf->_bulkCopyController.window close];
+        [[strongSelf.delegate profilePreferencesModel] flush];
     }];
 }
 
@@ -598,6 +601,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     newProfile[KEY_SHORTCUT] = @"";
     newProfile[KEY_BOUND_HOSTS] = @[];
     newProfile[KEY_TAGS] = [newProfile[KEY_TAGS] arrayByRemovingObject:kProfileDynamicTag];
+    newProfile[KEY_HAS_HOTKEY] = @NO;  // Don't create another hotkey window with the same hotkey
     [[_delegate profilePreferencesModel] addBookmark:newProfile];
     [_profilesListView reloadData];
     [_profilesListView selectRowByGuid:newProfile[KEY_GUID]];
@@ -619,7 +623,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
                                                          error:error];
 
     if (jsonData) {
-        return [[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] autorelease];
+        return [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
     } else {
         return nil;
     }
@@ -627,7 +631,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 
 - (IBAction)copyAllProfilesJson:(id)sender {
     ProfileModel *model = [_delegate profilePreferencesModel];
-    NSMutableString *profiles = [[@"{\n\"Profiles\": [\n" mutableCopy] autorelease];
+    NSMutableString *profiles = [@"{\n\"Profiles\": [\n" mutableCopy];
     BOOL first = YES;
     int errors = 0;
     for (Profile *profile in [model bookmarks]) {
@@ -653,7 +657,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     [pasteboard writeObjects:@[ profiles ]];
 
     if (errors) {
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Error";
         alert.informativeText = @"An error occurred. Check Console.app for details.";
         [alert runModal];
@@ -674,7 +678,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
         [pasteboard clearContents];
         [pasteboard writeObjects:@[ string ]];
     } else {
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Error";
         alert.informativeText = [NSString stringWithFormat:@"Couldn't convert profile to JSON: %@",
                                  [error localizedDescription]];
@@ -683,10 +687,6 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 }
 
 #pragma mark - Notifications
-
-- (void)refreshProfileTable {
-    [self profileTableSelectionDidChange:_profilesListView];
-}
 
 - (void)reloadProfiles {
     [self refresh];

@@ -22,6 +22,7 @@ extern NSString *const kProfilePreferenceInitialDirectoryAdvancedValue;
 
 @interface iTermProfilePreferences : NSObject
 
++ (NSArray<NSString *> *)allKeys;
 + (BOOL)valueIsLegal:(id)value forKey:(NSString *)key;
 + (id)defaultObjectForKey:(NSString *)key;
 
@@ -81,5 +82,8 @@ extern NSString *const kProfilePreferenceInitialDirectoryAdvancedValue;
 // This is used for ensuring that all controls have default values.
 + (BOOL)keyHasDefaultValue:(NSString *)key;
 + (BOOL)defaultValueForKey:(NSString *)key isCompatibleWithType:(PreferenceInfoType)type;
+
+// Returns nil if the value is nil, the key is bogus, or it could not be json encoded for some reason.
++ (NSString *)jsonEncodedValueForKey:(NSString *)key inProfile:(Profile *)profile;
 
 @end

@@ -10,6 +10,7 @@
 #import "EquivalenceClassSet.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermController.h"
+#import "iTermNotificationController.h"
 #import "iTermPreferences.h"
 #import "iTermProfilePreferences.h"
 #import "iTermShortcut.h"
@@ -146,7 +147,7 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
     BOOL _haveOpenendInitialWindows;
     Profile *_profile;
     ProfileModel *_profileModel;
-    NSDictionary *_fontOverrides;
+    NSMutableIndexSet *_pendingNewWindows;
 }
 
 @synthesize gateway = gateway_;
@@ -181,6 +182,7 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
         _tabColors = [[NSMutableDictionary alloc] init];
         self.clientName = [[TmuxControllerRegistry sharedInstance] uniqueClientNameBasedOn:clientName];
         _windowOpenerOptions = [[NSMutableDictionary alloc] init];
+        _pendingNewWindows = [[NSMutableIndexSet alloc] init];
         [[TmuxControllerRegistry sharedInstance] setController:self forClient:_clientName];
     }
     return self;
@@ -206,6 +208,7 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
     [_profile release];
     [_profileModel release];
     [_fontOverrides release];
+    [_pendingNewWindows release];
     [super dealloc];
 }
 
@@ -218,6 +221,7 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
     return temp;
 }
 
+// Called when listing window finishes. Happens for all new windows/tabs, whether initiated by iTerm2 or not.
 - (void)openWindowWithIndex:(int)windowIndex
                        name:(NSString *)name
                        size:(NSSize)size
@@ -255,7 +259,8 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
     windowOpener.manuallyOpened = _manualOpenRequested;
     windowOpener.tabColors = _tabColors;
     windowOpener.profile = self.profile;
-    windowOpener.initial = initial;
+    windowOpener.initial = initial || ![_pendingNewWindows containsIndex:windowIndex];
+    [_pendingNewWindows removeIndex:windowIndex];
     _manualOpenRequested = NO;
     if (![windowOpener openWindows:YES]) {
         [pendingWindowOpens_ removeObject:n];
@@ -400,6 +405,7 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
         DLog(@"Hidden windows existing, showing dashboard");
         [[TmuxDashboardController sharedInstance] showWindow:nil];
         [[[TmuxDashboardController sharedInstance] window] makeKeyAndOrderFront:nil];
+        [[iTermNotificationController sharedInstance] notify:@"Too many tmux windows!" withDescription:@"Use the tmux dashboard to select which to open."];
     }
     for (NSArray *record in windowsToOpen) {
         DLog(@"Open window %@", record);
@@ -1450,20 +1456,6 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
                          KEY_NON_ASCII_FONT: [nonAsciiFont stringValue],
                          KEY_HORIZONTAL_SPACING: @(hs),
                          KEY_VERTICAL_SPACING: @(vs) } retain];
-
-    [_profileModel setObject:[font stringValue]
-                      forKey:KEY_NORMAL_FONT
-                  inBookmark:self.profile];
-    [_profileModel setObject:[nonAsciiFont stringValue]
-                      forKey:KEY_NON_ASCII_FONT
-                  inBookmark:self.profile];
-    [_profileModel setObject:[NSNumber numberWithDouble:hs]
-                      forKey:KEY_HORIZONTAL_SPACING
-                  inBookmark:self.profile];
-    [_profileModel setObject:[NSNumber numberWithDouble:vs]
-                      forKey:KEY_VERTICAL_SPACING
-                  inBookmark:self.profile];
-    [_profileModel postChangeNotification];
 }
 
 #pragma mark - Private
@@ -1759,10 +1751,13 @@ static NSString *kListWindowsFormat = @"\"#{session_name}\t#{window_id}\t"
     }
 }
 
+// Called only for iTerm2-initiated new windows/tabs.
 - (void)newWindowWithAffinityCreated:(NSString *)responseStr
                       affinityWindow:(NSString *)affinityWindow {  // Value passed in to -newWindowWithAffinity:, may be nil
     if ([responseStr hasPrefix:@"@"]) {
-        NSString  *windowId = [NSString stringWithInt:[[responseStr substringFromIndex:1] intValue]];
+        int intWindowId = [[responseStr substringFromIndex:1] intValue];
+        NSString  *windowId = [NSString stringWithInt:intWindowId];
+        [_pendingNewWindows addIndex:intWindowId];
         if (affinityWindow) {
             [affinities_ setValue:windowId
                      equalToValue:affinityWindow];

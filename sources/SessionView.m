@@ -6,6 +6,7 @@
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermAnnouncementViewController.h"
 #import "iTermMetalClipView.h"
+#import "iTermMetalDeviceProvider.h"
 #import "iTermPreferences.h"
 #import "NSView+iTerm.h"
 #import "MovePaneController.h"
@@ -56,8 +57,8 @@ static NSDate* lastResizeDate_;
 @end
 
 
-@interface SessionView () <iTermAnnouncementDelegate>
-@property(nonatomic, retain) PTYScrollView *scrollview;
+@interface SessionView () <iTermAnnouncementDelegate, NSDraggingSource, PTYScrollerDelegate>
+@property(nonatomic, strong) PTYScrollView *scrollview;
 @end
 
 @implementation SessionView {
@@ -96,21 +97,19 @@ static NSDate* lastResizeDate_;
 
 + (void)initialize {
     if (self == [SessionView self]) {
-        lastResizeDate_ = [[NSDate date] retain];
+        lastResizeDate_ = [NSDate date];
     }
 }
 
 + (void)windowDidResize {
-    [lastResizeDate_ release];
-    lastResizeDate_ = [[NSDate date] retain];
+    lastResizeDate_ = [NSDate date];
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         [self registerForDraggedTypes:@[ iTermMovePaneDragType, @"com.iterm2.psm.controlitem" ]];
-        [lastResizeDate_ release];
-        lastResizeDate_ = [[NSDate date] retain];
+        lastResizeDate_ = [NSDate date];
         _announcements = [[NSMutableArray alloc] init];
 
         // Set up find view
@@ -130,6 +129,7 @@ static NSDate* lastResizeDate_;
                                                                       aRect.size.width,
                                                                       aRect.size.height)
                                        hasVerticalScroller:NO];
+        self.verticalScroller.ptyScrollerDelegate = self;
         [_scrollview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
         if (@available(macOS 10.11, *)) {
@@ -143,26 +143,32 @@ static NSDate* lastResizeDate_;
 
         // assign the main view
         [self addSubview:_scrollview];
+
+#if ENABLE_LOW_POWER_GPU_DETECTION
+        if (@available(macOS 10.11, *)) {
+            [[NSNotificationCenter defaultCenter] addObserver:self
+                                                     selector:@selector(preferredMetalDeviceDidChange:)
+                                                         name:iTermMetalDeviceProviderPreferredDeviceDidChangeNotification
+                                                       object:nil];
+        }
+#endif
     }
     return self;
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     _inDealloc = YES;
-    [_scrollview release];
+    if (self.verticalScroller.ptyScrollerDelegate == self) {
+        self.verticalScroller.ptyScrollerDelegate = nil;
+    }
     [_title removeFromSuperview];
     [self unregisterDraggedTypes];
     [_currentAnnouncement dismiss];
-    [_currentAnnouncement release];
-    [_announcements release];
     while (self.trackingAreas.count) {
         [self removeTrackingArea:self.trackingAreas[0]];
     }
     _metalView.delegate = nil;
-    [_metalView release];
-    [_driver release];
-    [_metalClipView release];
-    [super dealloc];
 }
 
 - (BOOL)useMetal {
@@ -187,11 +193,40 @@ static NSDate* lastResizeDate_;
     }
 }
 
+- (void)preferredMetalDeviceDidChange:(NSNotification *)notification NS_AVAILABLE_MAC(10_11) {
+    if (_metalView) {
+        [self.delegate sessionViewRecreateMetalView];
+    }
+}
+
 - (void)installMetalViewWithDataSource:(id<iTermMetalDriverDataSource>)dataSource NS_AVAILABLE_MAC(10_11) {
     // Allocate a new metal view
-    _metalView = [[MTKView alloc] initWithFrame:_scrollview.contentView.frame
-                                         device:MTLCreateSystemDefaultDevice()];
+    if ([iTermAdvancedSettingsModel preferIntegratedGPU]) {
+        NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
 
+        id<MTLDevice> gpu = nil;
+
+        for (id<MTLDevice> device in devices) {
+            if (device.isLowPower) {
+                gpu = device;
+                break;
+            }
+        }
+
+        if (!gpu) {
+            gpu = MTLCreateSystemDefaultDevice();
+        }
+        _metalView = [[MTKView alloc] initWithFrame:_scrollview.contentView.frame
+                                             device:gpu];
+    } else {
+        _metalView = [[MTKView alloc] initWithFrame:_scrollview.contentView.frame
+                                             device:MTLCreateSystemDefaultDevice()];
+    }
+    // There was a spike in crashes on 5/1. I'm removing this temporarily to see if it was the cause.
+#if ENABLE_LOW_POWER_GPU_DETECTION
+                                         device:[[iTermMetalDeviceProvider sharedInstance] preferredDevice]];
+#endif
+    _metalView.layer.opaque = YES;
     // Tell the clip view about it so it can ask the metalview to draw itself on scroll.
     _metalClipView.metalView = _metalView;
 
@@ -199,25 +234,27 @@ static NSDate* lastResizeDate_;
 
     // Configure and hide the metal view. It will be shown by PTYSession after it has rendered its
     // first frame. Until then it's just a solid gray rectangle.
-    _metalView.paused = NO;
+    _metalView.paused = YES;
+    _metalView.enableSetNeedsDisplay = NO;
     _metalView.hidden = NO;
     _metalView.alphaValue = 0;
-    _metalView.enableSetNeedsDisplay = YES;
 
     // Start the metal driver going. It will receive delegate calls from MTKView that kick off
     // frame rendering.
-    _driver = [[iTermMetalDriver alloc] initWithMetalKitView:_metalView];
+    _driver = [[iTermMetalDriver alloc] initWithDevice:_metalView.device];
     _driver.dataSource = dataSource;
     [_driver mtkView:_metalView drawableSizeWillChange:_metalView.drawableSize];
     _metalView.delegate = _driver;
 }
 
+- (BOOL)drawFrameSynchronously {
+    return [_driver drawSynchronouslyInView:_metalView];
+}
+
 - (void)removeMetalView NS_AVAILABLE_MAC(10_11) {
     _metalView.delegate = nil;
     [_metalView removeFromSuperview];
-    [_metalView autorelease];
     _metalView = nil;
-    [_driver autorelease];
     _driver = nil;
     _metalClipView.useMetal = NO;
     _metalClipView.metalView = nil;
@@ -228,6 +265,15 @@ static NSDate* lastResizeDate_;
         // TODO: Would be nice to draw only the rect, but I don't see a way to do that with MTKView
         // that doesn't involve doing something nutty like saving a copy of the drawable.
         [_metalView setNeedsDisplay:YES];
+    }
+}
+
+- (void)setNeedsDisplay:(BOOL)needsDisplay {
+    [super setNeedsDisplay:needsDisplay];
+    if (@available(macOS 10.11, *)) {
+        if (needsDisplay) {
+            [_metalView setNeedsDisplay:YES];
+        }
     }
 }
 
@@ -294,10 +340,18 @@ static NSDate* lastResizeDate_;
 
 - (void)updateMetalViewFrame {
     // The metal view looks awful while resizing because it insists on scaling
-    // its contents.. Just switch off the metal renderer until it catches up.
+    // its contents. Just switch off the metal renderer until it catches up.
+    [_delegate sessionViewNeedsMetalFrameUpdate];
+}
+
+- (void)reallyUpdateMetalViewFrame {
     [_delegate sessionViewHideMetalViewUntilNextFrame];
-    _metalView.frame = _scrollview.contentView.frame;
+    _metalView.frame = [self frameByInsettingForMetal:_scrollview.contentView.frame];
     [_driver mtkView:_metalView drawableSizeWillChange:_metalView.drawableSize];
+}
+
+- (NSRect)frameByInsettingForMetal:(NSRect)frame {
+    return NSInsetRect(frame, 1, [iTermAdvancedSettingsModel terminalVMargin]);
 }
 
 - (void)setDelegate:(id<iTermSessionViewDelegate>)delegate {
@@ -376,10 +430,10 @@ static NSDate* lastResizeDate_;
         while (self.trackingAreas.count) {
             [self removeTrackingArea:self.trackingAreas[0]];
         }
-        NSTrackingArea *trackingArea = [[[NSTrackingArea alloc] initWithRect:self.bounds
-                                                                     options:trackingOptions
-                                                                       owner:self
-                                                                    userInfo:nil] autorelease];
+        NSTrackingArea *trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+                                                                    options:trackingOptions
+                                                                      owner:self
+                                                                   userInfo:nil];
         [self addTrackingArea:trackingArea];
     }
 }
@@ -474,8 +528,7 @@ static NSDate* lastResizeDate_;
 
 // This is called as part of the live resizing protocol when you let up the mouse button.
 - (void)viewDidEndLiveResize {
-    [lastResizeDate_ release];
-    lastResizeDate_ = [[NSDate date] retain];
+    lastResizeDate_ = [NSDate date];
 }
 
 - (void)saveFrameSize {
@@ -495,11 +548,10 @@ static NSDate* lastResizeDate_;
                                                                session:session
                                                               delegate:[MovePaneController sharedInstance]
                                                                   move:move];
-    _splitSelectionView.wantsLayer = [iTermAdvancedSettingsModel useMetal];
+    _splitSelectionView.wantsLayer = [iTermPreferences boolForKey:kPreferenceKeyUseMetal];
     [_splitSelectionView setFrameOrigin:NSMakePoint(0, 0)];
     [_splitSelectionView setAutoresizingMask:NSViewWidthSizable|NSViewHeightSizable];
     [self addSubview:_splitSelectionView];
-    [_splitSelectionView release];
 }
 
 - (void)setSplitSelectionMode:(SplitSelectionMode)mode move:(BOOL)move session:(id)session {
@@ -533,8 +585,20 @@ static NSDate* lastResizeDate_;
     // than the session view.
     // TODO(metal): This will be a performance issue. Use another view with a layer and background color.
     [super drawRect:dirtyRect];
-    PTYScrollView *scrollView = [self scrollview];
-    NSRect svFrame = [scrollView frame];
+    if (_useMetal && _metalView.alphaValue == 1) {
+        [self drawAroundFrame:_metalView.frame dirtyRect:dirtyRect];
+    } else {
+        [self drawAroundFrame:self.scrollview.frame dirtyRect:dirtyRect];
+    }
+}
+
+- (void)drawAroundFrame:(NSRect)svFrame dirtyRect:(NSRect)dirtyRect {
+    // left
+    if (svFrame.origin.x > 0) {
+        [self drawBackgroundInRect:NSMakeRect(0, 0, svFrame.origin.x, self.frame.size.height)];
+    }
+
+    // right
     if (svFrame.size.width < self.frame.size.width) {
         double widthDiff = self.frame.size.width - svFrame.size.width;
         [self drawBackgroundInRect:NSMakeRect(self.frame.size.width - widthDiff,
@@ -542,15 +606,17 @@ static NSDate* lastResizeDate_;
                                               widthDiff,
                                               self.frame.size.height)];
     }
+    // bottom
     if (svFrame.origin.y != 0) {
         [self drawBackgroundInRect:NSMakeRect(0, 0, self.frame.size.width, svFrame.origin.y)];
     }
-    CGFloat maxY = svFrame.origin.y + svFrame.size.height;
-    if (maxY < self.frame.size.height) {
+
+    // top
+    if (NSMaxY(svFrame) < self.frame.size.height) {
         [self drawBackgroundInRect:NSMakeRect(dirtyRect.origin.x,
-                                              maxY,
+                                              NSMaxY(svFrame),
                                               dirtyRect.size.width,
-                                              self.frame.size.height - maxY)];
+                                              self.frame.size.height - NSMaxY(svFrame))];
     }
 }
 
@@ -568,9 +634,8 @@ static NSDate* lastResizeDate_;
                                                                                0,
                                                                                frame.size.width,
                                                                                frame.size.height)];
-    _splitSelectionView.wantsLayer = [iTermAdvancedSettingsModel useMetal];
+    _splitSelectionView.wantsLayer = [iTermPreferences boolForKey:kPreferenceKeyUseMetal];
     [self addSubview:_splitSelectionView];
-    [_splitSelectionView release];
     [[self window] orderFront:nil];
 }
 
@@ -581,13 +646,17 @@ static NSDate* lastResizeDate_;
     return half;
 }
 
+- (BOOL)hasHoverURL {
+    return _hoverURLView != nil;
+}
+
 - (void)setHoverURL:(NSString *)url {
     if (_hoverURLView == nil) {
         if (url == nil) {
             return;
         }
-        _hoverURLView = [[[iTermHoverContainerView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)] autorelease];
-        _hoverURLTextField = [[[NSTextField alloc] initWithFrame:_hoverURLView.bounds] autorelease];
+        _hoverURLView = [[iTermHoverContainerView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
+        _hoverURLTextField = [[NSTextField alloc] initWithFrame:_hoverURLView.bounds];
         [_hoverURLTextField setDrawsBackground:NO];
         [_hoverURLTextField setBordered:NO];
         [_hoverURLTextField setEditable:NO];
@@ -600,11 +669,14 @@ static NSDate* lastResizeDate_;
         [_hoverURLView addSubview:_hoverURLTextField];
         _hoverURLView.frame = _hoverURLTextField.bounds;
         [self addSubview:_hoverURLView];
+        [_delegate sessionViewDidChangeHoverURLVisible:YES];
     } else if (url == nil) {
         [_hoverURLView removeFromSuperview];
         _hoverURLView = nil;
         _hoverURLTextField = nil;
+        [_delegate sessionViewDidChangeHoverURLVisible:NO];
     } else {
+        // _hoveurlView != nil && url != nil
         [_hoverURLTextField setStringValue:url];
     }
 
@@ -615,23 +687,28 @@ static NSDate* lastResizeDate_;
     [_delegate sessionViewDidChangeWindow];
 }
 
+- (PTYScroller *)verticalScroller {
+    return [PTYScroller castFrom:self.scrollview.verticalScroller];
+}
+
 #pragma mark NSDraggingSource protocol
 
-- (void)draggedImage:(NSImage *)draggedImage movedTo:(NSPoint)screenPoint {
+- (void)draggingSession:(NSDraggingSession *)session movedToPoint:(NSPoint)screenPoint {
     [[NSCursor closedHandCursor] set];
 }
 
-- (NSDragOperation)draggingSourceOperationMaskForLocal:(BOOL)isLocal {
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    const BOOL isLocal = (context == NSDraggingContextWithinApplication);
     return (isLocal ? NSDragOperationMove : NSDragOperationNone);
 }
 
-- (BOOL)ignoreModifierKeysWhileDragging {
+- (BOOL)ignoreModifierKeysForDraggingSession:(NSDraggingSession *)session {
     return YES;
 }
 
-- (void)draggedImage:(NSImage *)anImage
-             endedAt:(NSPoint)aPoint
-           operation:(NSDragOperation)operation {
+- (void)draggingSession:(NSDraggingSession *)session
+           endedAtPoint:(NSPoint)aPoint
+              operation:(NSDragOperation)operation {
     if (![[MovePaneController sharedInstance] dragFailed]) {
         [[MovePaneController sharedInstance] dropInSession:nil half:kNoHalf atPoint:aPoint];
     }
@@ -681,10 +758,10 @@ static NSDate* lastResizeDate_;
     NSRect frame = [scrollView frame];
     if (_showTitle) {
         frame.size.height -= kTitleHeight;
-        _title = [[[SessionTitleView alloc] initWithFrame:NSMakeRect(0,
-                                                                     self.frame.size.height - kTitleHeight,
-                                                                     self.frame.size.width,
-                                                                     kTitleHeight)] autorelease];
+        _title = [[SessionTitleView alloc] initWithFrame:NSMakeRect(0,
+                                                                    self.frame.size.height - kTitleHeight,
+                                                                    self.frame.size.width,
+                                                                    kTitleHeight)];
         if (adjustScrollView) {
             [_title setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
         }
@@ -861,7 +938,7 @@ static NSDate* lastResizeDate_;
 - (iTermAnnouncementViewController *)nextAnnouncement {
     iTermAnnouncementViewController *possibleAnnouncement = nil;
     while (_announcements.count) {
-        possibleAnnouncement = [[_announcements[0] retain] autorelease];
+        possibleAnnouncement = _announcements[0];
         [_announcements removeObjectAtIndex:0];
         if (possibleAnnouncement.shouldBecomeVisible) {
             return possibleAnnouncement;
@@ -871,14 +948,13 @@ static NSDate* lastResizeDate_;
 }
 
 - (void)showNextAnnouncement {
-    [_currentAnnouncement autorelease];
     _currentAnnouncement = nil;
     if (_announcements.count) {
         iTermAnnouncementViewController *possibleAnnouncement = [self nextAnnouncement];
         if (!possibleAnnouncement) {
             return;
         }
-        _currentAnnouncement = [possibleAnnouncement retain];
+        _currentAnnouncement = possibleAnnouncement;
         [self updateAnnouncementFrame];
 
         // Animate in
@@ -921,6 +997,12 @@ static NSDate* lastResizeDate_;
                        afterDelay:[[NSAnimationContext currentContext] duration]];
         }
     }
+}
+
+#pragma mark - PTYScrollerDelegate
+
+- (void)userScrollDidChange:(BOOL)userScroll {
+    [self.delegate sessionViewUserScrollDidChange:userScroll];
 }
 
 @end

@@ -8,6 +8,8 @@
 
 #import "ToolNotes.h"
 #import "NSFileManager+iTerm.h"
+#import "PTYWindow.h"
+#import "PseudoTerminal.h"
 
 static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification";
 
@@ -55,16 +57,6 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
         [[textView_ textContainer] setWidthTracksTextView:YES];
         [textView_ setDelegate:self];
 
-        // Migrate notes to the new location. Prior to 3.0 (and its preceding betas in the 2.9 series)
-        // it was in App Support/iTerm, not App Support/iTerm2.
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            NSFileManager *fileManager = [NSFileManager defaultManager];
-            if ([fileManager fileExistsAtPath:[self legacyFilename]] && ![fileManager fileExistsAtPath:[self filename]]) {
-                [fileManager moveItemAtPath:[self legacyFilename] toPath:[self filename] error:nil];
-            }
-        });
-
         [textView_ readRTFDFromFile:[self filename]];
         textView_.automaticSpellingCorrectionEnabled = NO;
         textView_.automaticDashSubstitutionEnabled = NO;
@@ -77,6 +69,10 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
 
         [self addSubview:scrollview];
 
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(windowAppearanceDidChange:)
+                                                     name:iTermWindowAppearanceDidChange
+                                                   object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(setText:)
                                                      name:kToolNotesSetTextNotification
@@ -91,10 +87,6 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
     [textView_ writeRTFDToFile:[self filename] atomically:NO];
     [filemanager_ release];
     [super dealloc];
-}
-
-- (NSString *)legacyFilename {
-    return [NSString stringWithFormat:@"%@/notes.rtfd", [filemanager_ legacyApplicationSupportDirectory]];
 }
 
 - (NSString *)filename {
@@ -127,6 +119,27 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
 - (CGFloat)minimumHeight
 {
     return 15;
+}
+
+- (void)updateAppearance {
+    if (!self.window) {
+        return;
+    }
+    if ([self.window.appearance.name isEqual:NSAppearanceNameVibrantDark]) {
+        textView_.backgroundColor = [NSColor blackColor];
+        textView_.textColor = [NSColor whiteColor];
+    } else {
+        textView_.backgroundColor = [NSColor whiteColor];
+        textView_.textColor = [NSColor blackColor];
+    }
+}
+
+- (void)viewDidMoveToWindow {
+    [self updateAppearance];
+}
+
+- (void)windowAppearanceDidChange:(NSNotification *)notification {
+    [self updateAppearance];
 }
 
 @end

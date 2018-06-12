@@ -49,8 +49,6 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_backgroundImageFilename release];
-    [super dealloc];
 }
 
 - (void)awakeFromNib {
@@ -59,26 +57,32 @@
                                                  name:kReloadAllProfiles
                                                object:nil];
 
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(updateLabels:)
-                                                 name:kUpdateLabelsNotification
-                                               object:nil];
-
+    __weak __typeof(self) weakSelf = self;
     PreferenceInfo *info;
     info = [self defineControl:_transparency
                            key:KEY_TRANSPARENCY
                           type:kPreferenceInfoTypeSlider];
     info.observer = ^() {
-        BOOL haveTransparency = (_transparency.doubleValue > 0);
-        _transparencyAffectsOnlyDefaultBackgroundColor.enabled = haveTransparency;
-        _blurRadius.enabled = haveTransparency;
-        _useBlur.enabled = haveTransparency;
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        BOOL haveTransparency = (strongSelf->_transparency.doubleValue > 0);
+        strongSelf->_transparencyAffectsOnlyDefaultBackgroundColor.enabled = haveTransparency;
+        strongSelf->_blurRadius.enabled = haveTransparency;
+        strongSelf->_useBlur.enabled = haveTransparency;
     };
 
     info = [self defineControl:_useBlur
                            key:KEY_BLUR
                           type:kPreferenceInfoTypeCheckbox];
-    info.observer = ^() { _blurRadius.enabled = (_useBlur.state == NSOnState); };
+    info.observer = ^() {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        strongSelf->_blurRadius.enabled = (strongSelf->_useBlur.state == NSOnState);
+    };
 
     [self defineControl:_blurRadius
                     key:KEY_BLUR_RADIUS
@@ -114,21 +118,20 @@
                     key:KEY_SCREEN
                    type:kPreferenceInfoTypePopup
          settingChanged:^(id sender) { [self screenDidChange]; }
-                 update:^BOOL{ [self updateScreen]; return YES; }];
+                 update:^BOOL{ [weakSelf updateScreen]; return YES; }];
 
     info = [self defineControl:_space
                            key:KEY_SPACE
                           type:kPreferenceInfoTypePopup];
     info.onChange = ^() {
-        if ([_space selectedTag] > 0) {
-            [self maybeWarnAboutSpaces];
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        if ([strongSelf->_space selectedTag] > 0) {
+            [strongSelf maybeWarnAboutSpaces];
         }
     };
-
-    info = [self defineControl:_syncTitle
-                           key:KEY_SYNC_TITLE
-                          type:kPreferenceInfoTypeCheckbox];
-    [self updateSyncTitleEnabled];
 
     [self defineControl:_preventTab
                     key:KEY_PREVENT_TAB
@@ -170,20 +173,12 @@
     return [[super keysForBulkCopy] arrayByAddingObjectsFromArray:keys];
 }
 
-- (void)updateSyncTitleEnabled {
-    _syncTitle.enabled = [iTermPreferences boolForKey:kPreferenceKeyShowProfileName];
-}
-
 #pragma mark - Notifications
 
 // This is also a superclass method.
 - (void)reloadProfile {
     [super reloadProfile];
     [self loadBackgroundImageWithFilename:[self stringForKey:KEY_BACKGROUND_IMAGE_LOCATION]];
-}
-
-- (void)updateLabels:(NSNotification *)notification {
-    [self updateSyncTitleEnabled];
 }
 
 #pragma mark - Actions
@@ -236,7 +231,7 @@
 - (void)loadBackgroundImageWithFilename:(NSString *)filename {
     NSImage *anImage = filename.length > 0 ? [[NSImage alloc] initWithContentsOfFile:filename] : nil;
     if (anImage) {
-        [_backgroundImagePreview setImage:[anImage autorelease]];
+        [_backgroundImagePreview setImage:anImage];
         [_useBackgroundImage setState:NSOnState];
         self.backgroundImageFilename = filename;
     } else {
